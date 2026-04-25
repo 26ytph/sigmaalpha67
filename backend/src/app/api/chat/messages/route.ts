@@ -9,7 +9,12 @@ import {
   generateGeneralChatReply,
   lastGeminiChatError,
 } from "@/engines/geminiChat";
-import { answerRagQuery, shouldUseRag } from "@/engines/rag";
+import {
+  answerRagQuery,
+  ensureCounselorFaqsLoaded,
+  searchKnowledge,
+  shouldUseRag,
+} from "@/engines/rag";
 import { generateUserInsight } from "@/engines/userInsight";
 import { processUserQuestion } from "@/engines/normalizeQuestion";
 import {
@@ -97,7 +102,23 @@ export const POST = withAuth(async (req, { auth }) => {
   const profile = body.context?.useProfile === false ? null : store.profiles.get(auth.userId) ?? null;
   const persona = store.personas.get(auth.userId) ?? null;
 
-  const ragEnabled = body.context?.useRag !== false && shouldUseRag(body.message, mode);
+  // 先把諮詢師寫過的 FAQ 從 supabase 載進 in-memory KB（60s TTL）。
+  // 這一步要在 shouldUseRag / searchKnowledge 之前 — 否則 cold start 後寫過的 FAQ 撈不到。
+  await ensureCounselorFaqsLoaded();
+
+  // RAG 觸發判斷：除了 keyword 名單之外，也用一次便宜的 KB 預檢；
+  // 若這個問題真的有諮詢師寫過的 FAQ 高度命中，就強制走 RAG path 把答案拉出來。
+  let ragEnabled = body.context?.useRag !== false && shouldUseRag(body.message, mode);
+  if (!ragEnabled && body.context?.useRag !== false) {
+    try {
+      const peek = searchKnowledge({ query: body.message, topK: 1 });
+      if (peek.length > 0 && peek[0].score >= 0.4) {
+        ragEnabled = true;
+      }
+    } catch {
+      /* KB 還沒 seed 之類；忽略 */
+    }
+  }
 
   const personaHash = persona
     ? `${persona.careerStage}:${(persona.mainInterests ?? []).slice(0, 3).join(",")}`
@@ -140,6 +161,9 @@ export const POST = withAuth(async (req, { auth }) => {
       messageId: userMsg.id,
       question: body.message,
       assistantReply: cached.reply,
+      // 命中 cache 表示之前已成功回過這題、且當時不需 handoff（cache 不會存 handoff）→
+      // 視為 AI 信心足夠，直接 resolved。
+      aiHighConfidence: !cached.shouldHandoff,
       profile,
       persona,
       history: conv.messages.slice(0, -2),
@@ -242,12 +266,15 @@ export const POST = withAuth(async (req, { auth }) => {
 
   // —— 正規化 + tag 抽取（不 await，背景跑）——
   //    把 reply 一起帶進去 → 可以判斷「已解決」並寫到 normalized_questions。
+  //    needsHandoff=false 表示 AI 信心足、有命中 KB 或回得清楚 → 直接標 resolved=true，
+  //    諮詢師端 UI 看到的這組 Q+A 會立刻被淡化成「已完成」，不會再花時間處理重複問題。
   refreshNormalizedQuestionInBackground({
     userId: auth.userId,
     conversationId: convId,
     messageId: userMsg.id,
     question: body.message,
     assistantReply: reply,
+    aiHighConfidence: !needsHandoff,
     profile,
     persona,
     history: conv.messages.slice(0, -2), // 不含這次的 user + assistant msg
@@ -402,6 +429,7 @@ function refreshNormalizedQuestionInBackground(opts: {
   messageId: string;
   question: string;
   assistantReply?: string;
+  aiHighConfidence?: boolean;
   profile: import("@/types/profile").Profile | null;
   persona: import("@/types/persona").Persona | null;
   history: import("@/types/chat").ChatMessage[];
@@ -411,6 +439,7 @@ function refreshNormalizedQuestionInBackground(opts: {
       const outcome = await processUserQuestion({
         question: opts.question,
         assistantReply: opts.assistantReply,
+        aiHighConfidence: opts.aiHighConfidence,
         profile: opts.profile,
         persona: opts.persona,
         history: opts.history,

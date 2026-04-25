@@ -130,20 +130,31 @@ export const POST = withAuth<{ userId: string }>(
       }
     }
     if (answeredUserMsg) {
+      // 同 key 推 in-memory KB（即時生效）+ Supabase 持久化（cold start 後仍能命中）。
+      const faqId = `case_faq_msg_${answeredUserMsg.id}`;
+      const faqTags = ["諮詢師回覆", "歷史案例"];
       try {
         ensureKnowledgeBaseSeeded();
         upsertKnowledgeSource(
           buildCounselorFaqSource({
             question: answeredUserMsg.text,
             answer: text,
-            // 用 message id 當 stable key —— 同一題被改過再送一次會 update 而不是堆疊。
             caseId: `msg_${answeredUserMsg.id}`,
-            tags: ["諮詢師回覆", "歷史案例"],
+            tags: faqTags,
           }),
         );
       } catch (e) {
         console.warn("[counselor.reply] push to KB failed:", e);
       }
+      await db
+        .upsertCounselorFaq({
+          id: faqId,
+          question: answeredUserMsg.text,
+          answer: text,
+          tags: faqTags,
+          createdBy: auth.userId,
+        })
+        .catch(() => {});
       // 把對應的 normalized_questions 標成 resolved，諮詢師端 UI 會把這組 Q+A 淡化。
       await db
         .markNormalizedQuestionResolvedByMessageId(

@@ -19,6 +19,11 @@ export const PUT = withAuth<{ caseId: string }>(async (req, { params }) => {
   // 諮詢師若不希望這題被收進 KB（例如太個案、含敏感資料）可手動傳 false 蓋掉。
   c.savedToKnowledgeBase = body.savedToKnowledgeBase ?? true;
   if (c.savedToKnowledgeBase) {
+    const faqTags = [
+      "諮詢師審核",
+      ...c.suggestedTopics.slice(0, 3),
+      ...c.recommendedResources.slice(0, 3),
+    ];
     try {
       ensureKnowledgeBaseSeeded();
       const { source } = upsertKnowledgeSource(
@@ -26,13 +31,23 @@ export const PUT = withAuth<{ caseId: string }>(async (req, { params }) => {
           question: c.mainQuestion,
           answer: body.reply,
           caseId: c.id,
-          tags: ["諮詢師審核", ...c.suggestedTopics.slice(0, 3), ...c.recommendedResources.slice(0, 3)],
+          tags: faqTags,
         }),
       );
       c.knowledgeSourceId = source.id;
     } catch (e) {
       console.warn("[counselor.reply] push to KB failed:", e);
     }
+    // 同步寫進 supabase counselor_faqs，serverless cold start 後仍可被 RAG 命中。
+    await db
+      .upsertCounselorFaq({
+        id: `case_faq_${c.id}`,
+        question: c.mainQuestion,
+        answer: body.reply,
+        tags: faqTags,
+        createdBy: c.userId,
+      })
+      .catch(() => {});
   }
   // 同步把當初觸發 case 的 user 訊息對應的 normalized_questions 標成 resolved，
   // 諮詢師端 UI 會把這組 Q+A 淡化成「已完成」。

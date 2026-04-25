@@ -67,6 +67,13 @@ export async function processUserQuestion(opts: {
   assistantReply?: string;
   /** 自訂答案相似度門檻；預設 ANSWER_SIMILARITY_THRESHOLD。 */
   answerThreshold?: number;
+  /**
+   * AI 在這次 chat turn 已給出明確回覆且不需要 handoff（無低信心 / 無模糊不清）。
+   * true 時直接把這題標為 resolved，諮詢師端 UI 會把這組 Q+A 淡化成「已完成」。
+   * 這個訊號從 chat route 傳進來，比 KB+answer-match 寬鬆 — 只要 AI 自己不慫，
+   * 就算 KB 沒有完全相同的 FAQ，也算諮詢師可以略過。
+   */
+  aiHighConfidence?: boolean;
 }): Promise<NormalizationOutcome> {
   const text = (opts.question ?? "").trim();
   if (!text) {
@@ -75,6 +82,7 @@ export async function processUserQuestion(opts: {
 
   const threshold = opts.threshold ?? KB_SIMILARITY_THRESHOLD;
   const answerThreshold = opts.answerThreshold ?? ANSWER_SIMILARITY_THRESHOLD;
+  const aiConfident = opts.aiHighConfidence === true;
 
   // 1) 先看 RAG KB 有沒有近似的既有問答
   let closestTitle = "";
@@ -108,7 +116,8 @@ export async function processUserQuestion(opts: {
     const answerScore = closestAnswerText
       ? scoreTextSimilarity(reply, closestAnswerText)
       : 0;
-    const resolved = answerScore >= answerThreshold;
+    const answerMatches = answerScore >= answerThreshold;
+    const resolved = aiConfident || answerMatches;
 
     // 命中時跳過 Gemini 整理（多花 token 沒意義），用 heuristic 補欄位即可。
     const body = buildHeuristic(text, opts.profile ?? null);
@@ -130,7 +139,9 @@ export async function processUserQuestion(opts: {
       thresholdUsed: threshold,
       resolved,
       resolvedReason: resolved
-        ? `KB 命中（${closestScore.toFixed(2)}）+ 回答近似（${answerScore.toFixed(2)}）`
+        ? aiConfident && !answerMatches
+          ? `AI 在這次回覆已給出明確答案（KB 命中 ${closestScore.toFixed(2)}）`
+          : `KB 命中（${closestScore.toFixed(2)}）+ 回答近似（${answerScore.toFixed(2)}）`
         : `KB 命中（${closestScore.toFixed(2)}）但回答近似度只有 ${answerScore.toFixed(2)}`,
       answerScore,
       closestKbAnswer: closestAnswerText.slice(0, 600),
@@ -156,6 +167,7 @@ export async function processUserQuestion(opts: {
     body = buildHeuristic(text, opts.profile ?? null);
     generatedBy = "heuristic";
   }
+  if (aiConfident && !body.tags.includes("已解決")) body.tags.push("已解決");
 
   const draft: NormalizedQuestionDraft = {
     rawQuestion: text,
@@ -171,8 +183,10 @@ export async function processUserQuestion(opts: {
     closestKbTitle: closestTitle,
     closestKbScore: closestScore,
     thresholdUsed: threshold,
-    resolved: false,
-    resolvedReason: "",
+    resolved: aiConfident,
+    resolvedReason: aiConfident
+      ? "AI 在這次回覆已給出明確答案（不需要 handoff）"
+      : "",
     answerScore: 0,
     closestKbAnswer: "",
     generatedBy,
