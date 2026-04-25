@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../logic/generate_plan.dart';
 import '../logic/persona_engine.dart';
 import '../logic/skill_translator.dart';
 import '../models/models.dart';
@@ -161,6 +162,61 @@ class AppRepository {
     } catch (_) {
       return SkillTranslatorEngine.translate(raw);
     }
+  }
+
+  /// 從後端拉一份 LLM 客製化的 4 週計畫（`POST /api/plan/generate`）。
+  ///
+  /// 流程：
+  ///   1. 先呼叫後端（後端會 try Gemini，失敗自動 fallback 到 template）。
+  ///   2. 若整個 endpoint 都不通（離線、401），fallback 到本機
+  ///      [generatePlan] — 同樣的 template，但跑在裝置上。
+  ///
+  /// 回傳的 [GeneratedPlan] 一定可用。`fromBackend` 表示這份是否真的
+  /// 來自後端（用來在 UI 上區分「AI 客製」vs「本機模板」）。
+  static Future<({GeneratedPlan plan, bool fromBackend})> fetchPlan(
+    AppStorage storage,
+  ) async {
+    final remote = await BackendApi.generatePlan(
+      mode: storage.profile.mode,
+      likedRoleIds: storage.explore.likedRoleIds,
+      persona: storage.persona.isEmpty ? null : storage.persona,
+    );
+
+    // 本機 plan：負責 basedOnTopTags / recommendedRoles / courses 這些
+    // deterministic 的部分；如果後端 OK，再用後端的 headline + weeks
+    // 蓋掉。
+    final localPlan = generatePlan(
+      storage.explore.likedRoleIds,
+      mode: storage.profile.mode,
+    );
+
+    if (remote == null) {
+      return (plan: localPlan, fromBackend: false);
+    }
+
+    final weeks = remote.weeks
+        .map(
+          (w) => PlanWeek(
+            week: w.week,
+            title: w.title,
+            goals: w.goals,
+            resources: w.resources,
+            outputs: w.outputs,
+          ),
+        )
+        .toList();
+
+    return (
+      plan: GeneratedPlan(
+        basedOnLikedRoleIds: localPlan.basedOnLikedRoleIds,
+        basedOnTopTags: localPlan.basedOnTopTags,
+        recommendedRoles: localPlan.recommendedRoles,
+        headline: remote.headline,
+        weeks: weeks,
+        courses: localPlan.courses,
+      ),
+      fromBackend: true,
+    );
   }
 
   /// 一次重新整理職涯路徑頁需要的三份資料：profile / persona / 技能翻譯。

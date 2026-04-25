@@ -59,6 +59,24 @@ class ConversationHistory {
   final List<RemoteChatMessage> messages;
 }
 
+/// 後端 `POST /api/plan/generate` 回傳的單週資料。
+/// 對應 `backend/src/types/plan.ts` 的 `PlanWeek`。
+class BackendPlanWeek {
+  const BackendPlanWeek({
+    required this.week,
+    required this.title,
+    required this.goals,
+    required this.resources,
+    required this.outputs,
+  });
+
+  final int week;
+  final String title;
+  final List<String> goals;
+  final List<String> resources;
+  final List<String> outputs;
+}
+
 class BackendChatReply {
   const BackendChatReply({
     required this.conversationId,
@@ -430,6 +448,57 @@ class BackendApi {
         'swipedAt': DateTime.now().toIso8601String(),
       },
     );
+  }
+
+  /// 呼叫後端 `POST /api/plan/generate` 取得 LLM 客製化的 4 週計畫。
+  ///
+  /// 回傳的是「headline + weeks」這兩個 LLM 真正要算的部分；
+  /// `basedOnTopTags` / `recommendedRoles` 後端是用 deterministic 算法回的，
+  /// 但本 client 不需要 — Career Path 畫面只用 headline 與 weeks。
+  ///
+  /// 失敗（網路 / 401 / Gemini quota）回 `null`，呼叫端可以 fallback 到
+  /// 本機 `lib/logic/generate_plan.dart`。
+  static Future<({String headline, List<BackendPlanWeek> weeks})?>
+  generatePlan({
+    required AppMode mode,
+    required List<String> likedRoleIds,
+    Persona? persona,
+  }) async {
+    try {
+      final body = <String, dynamic>{
+        'mode': mode == AppMode.startup ? 'startup' : 'career',
+        'likedRoleIds': likedRoleIds,
+        if (persona != null && !persona.isEmpty)
+          'persona': _personaToJson(persona),
+      };
+      final data = await _request('POST', '/api/plan/generate', body: body);
+      final raw = data['plan'];
+      if (raw is! Map) return null;
+      final plan = Map<String, dynamic>.from(raw);
+      final headline = (plan['headline'] as String?)?.trim() ?? '';
+      final weeksRaw = (plan['weeks'] as List?) ?? const [];
+      final weeks = <BackendPlanWeek>[];
+      for (final w in weeksRaw) {
+        if (w is! Map) continue;
+        final m = Map<String, dynamic>.from(w);
+        final week = (m['week'] as num?)?.toInt() ?? 0;
+        final title = (m['title'] as String?)?.trim() ?? '';
+        if (week <= 0 || title.isEmpty) continue;
+        weeks.add(
+          BackendPlanWeek(
+            week: week,
+            title: title,
+            goals: List<String>.from((m['goals'] as List?) ?? const []),
+            resources: List<String>.from((m['resources'] as List?) ?? const []),
+            outputs: List<String>.from((m['outputs'] as List?) ?? const []),
+          ),
+        );
+      }
+      if (headline.isEmpty || weeks.isEmpty) return null;
+      return (headline: headline, weeks: weeks);
+    } catch (_) {
+      return null;
+    }
   }
 
   /// 從後端拉滑卡結果（GET /api/swipe/summary）。

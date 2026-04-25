@@ -50,6 +50,8 @@ class CareerPathScreen extends StatefulWidget {
 class _CareerPathScreenState extends State<CareerPathScreen> {
   int _tab = 0;
   bool _refreshing = false;
+  bool _aiPlanLoading = false;
+  bool _planFromBackend = false;
   final ScrollController _todoScroll = ScrollController();
   final Map<int, GlobalKey> _weekKeys = {};
 
@@ -59,10 +61,19 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
 
   late plan.GeneratedPlan _plan;
 
+  /// 用來判斷「需不需要重打 LLM」的 signature（liked + mode + persona text）。
+  /// 避免每次 `setState` 都重新打 Gemini，浪費 quota。
+  String _planSignature = '';
+  // ignore: unused_field
+  Object? _activeFetchToken;
+
   @override
   void initState() {
     super.initState();
-    _plan = _buildPlan(widget.storage);
+    _plan = _buildLocalPlan(widget.storage);
+    _planSignature = _signatureFor(widget.storage);
+    // 立刻打一次後端，如果有 GEMINI_API_KEY 設好就會拿到客製化 plan。
+    _fetchBackendPlan(widget.storage);
   }
 
   @override
@@ -70,14 +81,54 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
     super.didUpdateWidget(oldWidget);
     final old = oldWidget.storage;
     final cur = widget.storage;
-    if (!identical(old.explore.likedRoleIds, cur.explore.likedRoleIds) ||
+    final newSig = _signatureFor(cur);
+    if (newSig != _planSignature) {
+      _planSignature = newSig;
+      // 立刻先用本機重算一次 — 等 LLM 回來再覆蓋。
+      setState(() {
+        _plan = _buildLocalPlan(cur);
+        _planFromBackend = false;
+      });
+      _fetchBackendPlan(cur);
+    } else if (!identical(
+          old.explore.likedRoleIds,
+          cur.explore.likedRoleIds,
+        ) ||
         old.profile.startupInterest != cur.profile.startupInterest) {
-      setState(() => _plan = _buildPlan(cur));
+      // 同 signature 但 reference 變了（很少見）— 也重算本機，不打 LLM。
+      setState(() => _plan = _buildLocalPlan(cur));
     }
   }
 
-  static plan.GeneratedPlan _buildPlan(AppStorage s) {
+  static plan.GeneratedPlan _buildLocalPlan(AppStorage s) {
     return plan.generatePlan(s.explore.likedRoleIds, mode: s.profile.mode);
+  }
+
+  String _signatureFor(AppStorage s) {
+    final liked = [...s.explore.likedRoleIds]..sort();
+    return [
+      s.profile.startupInterest ? 'startup' : 'career',
+      liked.join(','),
+      s.persona.text,
+      s.persona.recommendedNextStep,
+    ].join('|');
+  }
+
+  /// 背景打後端取 LLM 客製化 plan。失敗就保持本機版本。
+  /// 用 token 防止舊 request 蓋掉新的（race-condition guard）。
+  Future<void> _fetchBackendPlan(AppStorage s) async {
+    final token = Object();
+    _activeFetchToken = token;
+    if (mounted) setState(() => _aiPlanLoading = true);
+    final result = await AppRepository.fetchPlan(s);
+    if (!mounted || _activeFetchToken != token) return;
+    setState(() {
+      _aiPlanLoading = false;
+      if (result.fromBackend) {
+        _plan = result.plan;
+        _planFromBackend = true;
+      }
+    });
   }
 
   // —— 一週要顯示的 todo：goals + outputs（resources 是閱讀資源，先留下不顯）
@@ -302,6 +353,8 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
                         monthGoal: _monthGoal,
                         monthSub: _monthSub,
                         interests: _topInterests,
+                        aiCustomized: _planFromBackend,
+                        aiLoading: _aiPlanLoading,
                         refreshing: _refreshing,
                         onCheckUpdates: _checkUpdates,
                         onOpenExplore: widget.onOpenExplore,
@@ -899,6 +952,8 @@ class _TodoListView extends StatelessWidget {
     required this.monthGoal,
     required this.monthSub,
     required this.interests,
+    required this.aiCustomized,
+    required this.aiLoading,
     required this.refreshing,
     required this.onCheckUpdates,
     required this.onOpenExplore,
@@ -914,6 +969,8 @@ class _TodoListView extends StatelessWidget {
   final String monthGoal;
   final String monthSub;
   final List<String> interests;
+  final bool aiCustomized;
+  final bool aiLoading;
   final bool refreshing;
   final VoidCallback onCheckUpdates;
   final VoidCallback? onOpenExplore;
@@ -936,6 +993,8 @@ class _TodoListView extends StatelessWidget {
                 goal: monthGoal,
                 sub: monthSub,
                 interests: interests,
+                aiCustomized: aiCustomized,
+                aiLoading: aiLoading,
               ),
               AppGaps.h16,
               if (weeks.isEmpty)
@@ -1085,12 +1144,16 @@ class _MonthHeader extends StatelessWidget {
     required this.goal,
     required this.sub,
     required this.interests,
+    required this.aiCustomized,
+    required this.aiLoading,
   });
 
   final String label;
   final String goal;
   final String sub;
   final List<String> interests;
+  final bool aiCustomized;
+  final bool aiLoading;
 
   @override
   Widget build(BuildContext context) {
@@ -1135,6 +1198,14 @@ class _MonthHeader extends StatelessWidget {
                   letterSpacing: 0.4,
                 ),
               ),
+              const Spacer(),
+              if (aiLoading)
+                const _AiBadge(
+                  label: 'AI 客製中…',
+                  showSpinner: true,
+                )
+              else if (aiCustomized)
+                const _AiBadge(label: 'AI 客製'),
             ],
           ),
           AppGaps.h10,
@@ -1367,6 +1438,53 @@ class _TodoRow extends StatelessWidget {
                 decorationColor: AppColors.textTertiary,
                 color: done ? AppColors.textTertiary : AppColors.textPrimary,
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 顯示在月份頭右上角的小徽章 — 「AI 客製中…」/「AI 客製」。
+class _AiBadge extends StatelessWidget {
+  const _AiBadge({required this.label, this.showSpinner = false});
+  final String label;
+  final bool showSpinner;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: CupertinoColors.white.withValues(alpha: 0.85),
+        borderRadius: BorderRadius.circular(AppRadii.pill),
+        border: Border.all(color: AppColors.separator),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (showSpinner) ...[
+            const CupertinoActivityIndicator(
+              radius: 6,
+              color: AppColors.brandStart,
+            ),
+            const SizedBox(width: 5),
+          ] else ...[
+            const Icon(
+              CupertinoIcons.sparkles,
+              size: 11,
+              color: AppColors.brandStart,
+            ),
+            const SizedBox(width: 4),
+          ],
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+              color: AppColors.brandStart,
+              letterSpacing: 0.4,
             ),
           ),
         ],
