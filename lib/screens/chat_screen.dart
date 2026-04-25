@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -490,18 +491,6 @@ class _ChatScreenState extends State<ChatScreen> {
                       ],
                     );
                   }
-                  if (m.fromUser && m.normalized != null) {
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        _MessageBubble(message: m),
-                        _NormalizedChip(
-                          normalized: m.normalized!,
-                          onTap: () => _showCounselorBrief(m),
-                        ),
-                      ],
-                    );
-                  }
                   return _MessageBubble(message: m);
                 },
               ),
@@ -720,131 +709,6 @@ class _SourceChip extends StatelessWidget {
         ),
       ),
     );
-  }
-}
-
-class _NormalizedChip extends StatelessWidget {
-  const _NormalizedChip({required this.normalized, required this.onTap});
-
-  final NormalizedQuestion normalized;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Align(
-        alignment: Alignment.centerRight,
-        child: CupertinoButton(
-          padding: EdgeInsets.zero,
-          minimumSize: Size.zero,
-          onPressed: onTap,
-          child: Container(
-            constraints: BoxConstraints(
-              maxWidth: MediaQuery.of(context).size.width * 0.78,
-            ),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: BoxDecoration(
-              color: AppColors.surfaceMuted,
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(14),
-                topRight: Radius.circular(14),
-                bottomLeft: Radius.circular(14),
-                bottomRight: Radius.circular(4),
-              ),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      CupertinoIcons.wand_stars,
-                      size: 12,
-                      color: AppColors.brandStart,
-                    ),
-                    AppGaps.w6,
-                    Text(
-                      'AI 結構化問題',
-                      style: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.4,
-                        color: AppColors.brandStart,
-                      ),
-                    ),
-                    AppGaps.w8,
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 1,
-                      ),
-                      decoration: BoxDecoration(
-                        color: _urgencyColor(
-                          normalized.urgency,
-                        ).withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        '迫切：${normalized.urgency}',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
-                          color: _urgencyColor(normalized.urgency),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                AppGaps.h6,
-                Text(
-                  '意圖：${normalized.intents.join('、')}',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                if (normalized.missingInfo.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Text(
-                      '尚缺：${normalized.missingInfo.take(2).join('、')}',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textTertiary,
-                      ),
-                    ),
-                  ),
-                AppGaps.h6,
-                const Text(
-                  '點此查看諮詢師交接單 →',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.brandStart,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  static Color _urgencyColor(String u) {
-    switch (u) {
-      case '高':
-        return AppColors.accentRose;
-      case '中高':
-        return AppColors.warn;
-      case '中':
-        return AppColors.brandStart;
-      default:
-        return AppColors.textTertiary;
-    }
   }
 }
 
@@ -1185,19 +1049,34 @@ class _Composer extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           Expanded(
-            child: CupertinoTextField(
-              controller: controller,
-              minLines: 1,
-              maxLines: 5,
-              enabled: enabled,
-              placeholder: '和 YAYA 說說你的職涯小煩惱…',
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              decoration: BoxDecoration(
-                color: AppColors.surfaceMuted,
-                borderRadius: BorderRadius.circular(22),
-                border: Border.all(color: AppColors.border),
+            // 攔截實體鍵盤 / 桌面：Enter 直接送，Shift+Enter 才換行。
+            child: Focus(
+              onKeyEvent: (node, event) {
+                if (event is KeyDownEvent &&
+                    event.logicalKey == LogicalKeyboardKey.enter &&
+                    !HardwareKeyboard.instance.isShiftPressed) {
+                  if (enabled) onSend();
+                  return KeyEventResult.handled;
+                }
+                return KeyEventResult.ignored;
+              },
+              child: CupertinoTextField(
+                controller: controller,
+                minLines: 1,
+                maxLines: 5,
+                enabled: enabled,
+                placeholder: '和 YAYA 說說你的職涯小煩惱…',
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                // iOS 軟鍵盤的 return 鍵改成「送出」。
+                textInputAction: TextInputAction.send,
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceMuted,
+                  borderRadius: BorderRadius.circular(22),
+                  border: Border.all(color: AppColors.border),
+                ),
+                onSubmitted: (_) => onSend(),
               ),
-              onSubmitted: (_) => onSend(),
             ),
           ),
           AppGaps.w8,
