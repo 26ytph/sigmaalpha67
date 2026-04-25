@@ -5,8 +5,59 @@ import { store } from "@/lib/store";
 import * as db from "@/lib/db";
 import type { Profile, ProfileInput, EducationEntry } from "@/types/profile";
 
+const EDU_GRADE_LIKE =
+  /(高中|高一|高二|高三|大[一二三四]|碩[一二]|博|畢業|年級|研一|研二|國[一二三]|高中部)/u;
+const EDU_SEPARATOR = /[\s・·|/，,]/u;
+
 function normaliseEducation(value: unknown): EducationEntry[] {
   if (!Array.isArray(value)) return [];
+  if (value.length === 0) return [];
+
+  // List-level legacy detection: a single education record was saved as 2–3
+  // separate strings (each element = one field) instead of one object. Merge
+  // them back into one entry. Triggers when:
+  //   - all elements are strings AND length is 2 or 3, AND
+  //   - at least one element looks like a grade, OR every element is a
+  //     single token (no internal whitespace / separator).
+  if (
+    value.every((e) => typeof e === "string") &&
+    value.length >= 2 &&
+    value.length <= 3
+  ) {
+    const strings = (value as string[]).map((s) => s.trim());
+    const gradeIdx = strings.findIndex((s) => EDU_GRADE_LIKE.test(s));
+    const allSingleToken = strings.every(
+      (s) => s.length > 0 && !EDU_SEPARATOR.test(s),
+    );
+    if (gradeIdx >= 0 || allSingleToken) {
+      let school = "";
+      let department = "";
+      let grade = "";
+      if (gradeIdx >= 0) {
+        grade = strings[gradeIdx];
+        const remaining = strings.filter((_, i) => i !== gradeIdx);
+        if (remaining.length === 1) {
+          school = remaining[0];
+        } else if (remaining.length === 2) {
+          // 較長的當學校（'國立臺灣大學' vs '社會系'）。
+          if (remaining[0].length >= remaining[1].length) {
+            school = remaining[0];
+            department = remaining[1];
+          } else {
+            school = remaining[1];
+            department = remaining[0];
+          }
+        }
+      } else {
+        // 沒抓到年級但全是原子欄位：以位置推 [學校, 學系, (年級)]
+        school = strings[0] ?? "";
+        department = strings[1] ?? "";
+        grade = strings[2] ?? "";
+      }
+      return school || department || grade ? [{ school, department, grade }] : [];
+    }
+  }
+
   return value
     .map((e): EducationEntry | null => {
       if (e && typeof e === "object") {
@@ -18,7 +69,7 @@ function normaliseEducation(value: unknown): EducationEntry[] {
         };
       }
       if (typeof e === "string") {
-        // legacy: try to split into 3 fields by whitespace / common separators
+        // Per-string legacy: a single combined line like '台大 資工 大三'.
         const parts = e
           .split(/[\s・·|/，,]+/u)
           .filter((s) => s.length > 0);
@@ -30,19 +81,27 @@ function normaliseEducation(value: unknown): EducationEntry[] {
       }
       return null;
     })
-    .filter((e): e is EducationEntry => e !== null);
+    .filter(
+      (e): e is EducationEntry =>
+        e !== null && (e.school !== "" || e.department !== "" || e.grade !== ""),
+    );
+}
+
+function healProfile(p: Profile): Profile {
+  return { ...p, educationItems: normaliseEducation(p.educationItems) };
 }
 
 export const GET = withAuth(async (_req, { auth }) => {
   // Try Supabase first; fall back to in-memory.
   const remote = await db.fetchProfile(auth.userId);
   if (remote) {
-    store.profiles.set(auth.userId, remote);
-    return NextResponse.json({ profile: remote });
+    const healed = healProfile(remote);
+    store.profiles.set(auth.userId, healed);
+    return NextResponse.json({ profile: healed });
   }
   const profile = store.profiles.get(auth.userId);
   if (!profile) return apiError("not_found", "Profile not yet created.");
-  return NextResponse.json({ profile });
+  return NextResponse.json({ profile: healProfile(profile) });
 });
 
 export const PUT = withAuth(async (req, { auth }) => {
