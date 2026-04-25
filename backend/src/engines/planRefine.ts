@@ -85,13 +85,57 @@ const RESPONSE_SCHEMA = {
   required: ["headline", "weeks"],
 };
 
-function summarisePlan(plan: RefinePlan): string {
-  const lines: string[] = [`目前計畫主題：${plan.headline}`];
+// ---------------------------------------------------------------------
+// Prompt size budgeting
+//
+// 為什麼存在：Gemini 2.5-flash + responseSchema 在輸入過長 / 輸出超過
+// maxOutputTokens 時會回 HTTP 400 或截斷 (finishReason=MAX_TOKENS)，
+// 對使用者來看就是「Gemini 拒絕了這個請求」的對話框。
+//
+// 對策：
+//   1. summarisePlan 從 verbose 改成 compact 一行 N 字節的格式。
+//   2. 每週最多保留 6 個 task 餵給 LLM（以保留 user-added / 未完成 為優先）。
+//   3. Persona 文字壓到 ~120 字、user prompt 壓到 ~500 字。
+// ---------------------------------------------------------------------
+const TASKS_PER_WEEK_INPUT_CAP = 6;
+const PERSONA_TEXT_MAX = 120;
+const USER_PROMPT_MAX = 500;
+
+function truncate(s: string | undefined | null, max: number): string {
+  if (!s) return "";
+  const t = s.trim();
+  if (t.length <= max) return t;
+  return `${t.slice(0, max)}…`;
+}
+
+/// 每週只保留最多 N 個 task，優先順序：使用者新增 > 未完成 > 已完成。
+/// 這樣壓縮後送給 Gemini，輸入小、它的輸出也容易在 budget 內。
+function compactPlan(plan: RefinePlan): RefinePlan {
+  return {
+    headline: plan.headline,
+    weeks: plan.weeks.map((w) => {
+      const sorted = [...w.tasks].sort((a, b) => {
+        const score = (t: RefineTask) =>
+          (t.userAdded ? 0 : 0) * 4 + (t.done ? 1 : 0) * 2;
+        return score(a) - score(b);
+      });
+      return { ...w, tasks: sorted.slice(0, TASKS_PER_WEEK_INPUT_CAP) };
+    }),
+  };
+}
+
+/// 緊湊格式：`g/<id>/<title>` 取代 verbose 的「id=... · section=... · ...」。
+/// section 用首字母 g/r/o；done / userAdded 用 ✓ / + 後綴。
+function summarisePlanCompact(plan: RefinePlan): string {
+  const lines: string[] = [`H:${truncate(plan.headline, 60)}`];
   for (const w of plan.weeks) {
-    lines.push(`第 ${w.week} 週 · ${w.title}`);
+    lines.push(`W${w.week}:${truncate(w.title, 40)}`);
     for (const t of w.tasks) {
-      const flag = t.done ? "[已完成]" : t.userAdded ? "[使用者新增]" : "";
-      lines.push(`  - id=${t.id} · section=${t.section} · ${t.title}${flag}`);
+      const sec = t.section[0]; // g / r / o
+      const tag = t.done ? "✓" : t.userAdded ? "+" : "";
+      lines.push(
+        `  ${sec}/${truncate(t.id, 24)}/${truncate(t.title, 40)}${tag}`,
+      );
     }
   }
   return lines.join("\n");
@@ -102,33 +146,127 @@ function buildUserPrompt(opts: {
   currentPlan: RefinePlan;
   mode: "career" | "startup";
   persona: Persona | null | undefined;
+  ultraCompact?: boolean;
 }): string {
+  const compact = opts.ultraCompact ?? false;
   const lines: string[] = [];
   lines.push(`模式：${opts.mode === "startup" ? "創業者" : "求職者"}`);
 
   if (opts.persona && opts.persona.text) {
-    lines.push(`Persona：${opts.persona.text}`);
+    if (!compact) {
+      lines.push(`Persona：${truncate(opts.persona.text, PERSONA_TEXT_MAX)}`);
+    }
     if (opts.persona.mainInterests?.length) {
-      lines.push(`興趣：${opts.persona.mainInterests.join("、")}`);
+      lines.push(`興趣：${opts.persona.mainInterests.slice(0, 5).join("、")}`);
     }
     if (opts.persona.strengths?.length) {
-      lines.push(`已有能力：${opts.persona.strengths.join("、")}`);
+      lines.push(`已有：${opts.persona.strengths.slice(0, 5).join("、")}`);
     }
     if (opts.persona.skillGaps?.length) {
-      lines.push(`待補強：${opts.persona.skillGaps.join("、")}`);
+      lines.push(`待補：${opts.persona.skillGaps.slice(0, 5).join("、")}`);
     }
   }
 
   lines.push("");
-  lines.push("使用者目前的計畫：");
-  lines.push(summarisePlan(opts.currentPlan));
+  lines.push("舊計畫（compact 格式：sec/id/title，✓=done，+=userAdded）：");
+  lines.push(summarisePlanCompact(compactPlan(opts.currentPlan)));
   lines.push("");
-  lines.push(`使用者新需求：「${opts.prompt}」`);
+  lines.push(`新需求：「${truncate(opts.prompt, USER_PROMPT_MAX)}」`);
   lines.push("");
   lines.push(
-    "請依需求調整計畫並輸出 JSON。保留還合理的舊任務 id，新增任務 id 用空字串。",
+    "依需求改 plan。舊任務若繼續用 → 保留 id；新增 task → id 留空字串。輸出 JSON。",
   );
   return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------
+// 對 Gemini 的單次呼叫。useSchema=false 時改用「只指定 json mime + 在 prompt
+// 內描述 JSON 結構」這種寬鬆模式 — 當 schema-validated 模式被 4xx reject 時
+// 通常還有救。
+// ---------------------------------------------------------------------
+async function callGeminiOnce(opts: {
+  apiKey: string;
+  model: string;
+  systemInstruction: string;
+  userPrompt: string;
+  useSchema: boolean;
+  maxOutputTokens: number;
+}): Promise<{ text: string } | { error: string; status?: number }> {
+  const generationConfig: Record<string, unknown> = {
+    temperature: 0.5,
+    maxOutputTokens: opts.maxOutputTokens,
+    responseMimeType: "application/json",
+  };
+  if (opts.useSchema) {
+    generationConfig.responseSchema = RESPONSE_SCHEMA;
+  }
+
+  const requestBody = JSON.stringify({
+    system_instruction: { parts: [{ text: opts.systemInstruction }] },
+    contents: [{ role: "user", parts: [{ text: opts.userPrompt }] }],
+    generationConfig,
+  });
+
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    opts.model,
+  )}:generateContent`;
+
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": opts.apiKey,
+      },
+      body: requestBody,
+    });
+  } catch (err) {
+    return {
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    return {
+      status: response.status,
+      error: `HTTP ${response.status}: ${body.slice(0, 300)}`,
+    };
+  }
+
+  const json = (await response.json().catch(() => null)) as {
+    candidates?: Array<{
+      content?: { parts?: Array<{ text?: string }> };
+      finishReason?: string;
+    }>;
+    promptFeedback?: { blockReason?: string };
+  } | null;
+
+  const candidate = json?.candidates?.[0];
+  const text =
+    candidate?.content?.parts?.map((p) => p.text ?? "").join("").trim() ?? "";
+  if (!text) {
+    return {
+      error: `empty text. finishReason=${candidate?.finishReason} blockReason=${json?.promptFeedback?.blockReason}`,
+    };
+  }
+  return { text };
+}
+
+/// 看錯誤訊息推測是不是「輸入 / 輸出超過 token 限制」。
+/// 如果是 → 上層應該嘗試 ultraCompact prompt 再試一次。
+function isLikelyTokenIssue(errorMsg: string): boolean {
+  const m = errorMsg.toLowerCase();
+  return (
+    m.includes("token") ||
+    m.includes("too long") ||
+    m.includes("exceeds") ||
+    m.includes("max_tokens") ||
+    m.includes("payload") ||
+    // schema-validated 模式輸出超過時 finishReason 通常是 MAX_TOKENS
+    m.includes("finishreason=max_tokens")
+  );
 }
 
 export async function refinePlanWithGemini(opts: {
@@ -162,80 +300,109 @@ export async function refinePlanWithGemini(opts: {
     ),
   );
 
-  const userPrompt = buildUserPrompt({
-    prompt: opts.prompt,
-    currentPlan: opts.currentPlan,
-    mode: opts.mode,
-    persona: opts.persona,
-  });
-  const requestBody = JSON.stringify({
-    system_instruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
-    contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-    generationConfig: {
-      temperature: 0.5,
-      maxOutputTokens: 1800,
-      responseMimeType: "application/json",
-      responseSchema: RESPONSE_SCHEMA,
-    },
-  });
-
   const errors: string[] = [];
+  // 每個 model 都跑「3 段 retry」：
+  //   A. 標準（schema + 正常 prompt）
+  //   B. 壓縮 prompt（schema + ultraCompact）— 對輸入過長 / MAX_TOKENS 友善
+  //   C. 無 schema fallback（只指定 json mime）— 對 schema reject 友善
+  // 任何一段成功就 return；A 沒看到 token 問題就直接跳 C。
   for (const model of modelsToTry) {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    const promptStandard = buildUserPrompt({
+      prompt: opts.prompt,
+      currentPlan: opts.currentPlan,
+      mode: opts.mode,
+      persona: opts.persona,
+    });
+    const promptUltra = buildUserPrompt({
+      prompt: opts.prompt,
+      currentPlan: opts.currentPlan,
+      mode: opts.mode,
+      persona: opts.persona,
+      ultraCompact: true,
+    });
+
+    // Attempt A — schema + 標準 prompt
+    let res = await callGeminiOnce({
+      apiKey,
       model,
-    )}:generateContent`;
-    try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": apiKey,
-        },
-        body: requestBody,
+      systemInstruction: SYSTEM_INSTRUCTION,
+      userPrompt: promptStandard,
+      useSchema: true,
+      maxOutputTokens: 4000, // 比之前 1800 更寬，避免被截
+    });
+
+    if ("text" in res) {
+      const parsed = parsePlanJson(res.text);
+      if (parsed) {
+        lastRefineGeminiError.value = null;
+        return parsed;
+      }
+      errors.push(`[${model}/A] parse failed: ${res.text.slice(0, 200)}`);
+    } else {
+      errors.push(`[${model}/A] ${res.error}`);
+      if (res.status === 429 || (res.status ?? 0) >= 500) continue;
+    }
+
+    // Attempt B — schema + ultraCompact（針對 token 超量問題）
+    if ("error" in res && isLikelyTokenIssue(res.error)) {
+      res = await callGeminiOnce({
+        apiKey,
+        model,
+        systemInstruction: SYSTEM_INSTRUCTION_COMPACT,
+        userPrompt: promptUltra,
+        useSchema: true,
+        maxOutputTokens: 4000,
       });
-      if (!response.ok) {
-        const body = await response.text().catch(() => "");
-        const msg = `[${model}] HTTP ${response.status}: ${body.slice(0, 200)}`;
-        errors.push(msg);
-        if (response.status === 429 || response.status >= 500) continue;
-        lastRefineGeminiError.value = errors.join(" | ");
-        return null;
+      if ("text" in res) {
+        const parsed = parsePlanJson(res.text);
+        if (parsed) {
+          lastRefineGeminiError.value = null;
+          return parsed;
+        }
+        errors.push(`[${model}/B] parse failed: ${res.text.slice(0, 200)}`);
+      } else {
+        errors.push(`[${model}/B] ${res.error}`);
       }
-      const json = (await response.json()) as {
-        candidates?: Array<{
-          content?: { parts?: Array<{ text?: string }> };
-          finishReason?: string;
-        }>;
-        promptFeedback?: { blockReason?: string };
-      };
-      const candidate = json.candidates?.[0];
-      const text = candidate?.content?.parts
-        ?.map((p) => p.text ?? "")
-        .join("")
-        .trim();
-      if (!text) {
-        errors.push(
-          `[${model}] empty text. finishReason=${candidate?.finishReason} blockReason=${json.promptFeedback?.blockReason}`,
-        );
-        continue;
+    }
+
+    // Attempt C — 無 schema（針對 schema-validated 4xx）
+    res = await callGeminiOnce({
+      apiKey,
+      model,
+      systemInstruction: SYSTEM_INSTRUCTION_NO_SCHEMA,
+      userPrompt: promptUltra,
+      useSchema: false,
+      maxOutputTokens: 4000,
+    });
+    if ("text" in res) {
+      const parsed = parsePlanJson(res.text);
+      if (parsed) {
+        lastRefineGeminiError.value = null;
+        return parsed;
       }
-      const parsed = parsePlanJson(text);
-      if (!parsed) {
-        errors.push(`[${model}] parse failed: ${text.slice(0, 200)}`);
-        continue;
-      }
-      lastRefineGeminiError.value = null;
-      return parsed;
-    } catch (err) {
-      const msg =
-        err instanceof Error ? `[${model}] ${err.message}` : `[${model}] ${err}`;
-      errors.push(msg);
-      continue;
+      errors.push(`[${model}/C] parse failed: ${res.text.slice(0, 200)}`);
+    } else {
+      errors.push(`[${model}/C] ${res.error}`);
     }
   }
-  lastRefineGeminiError.value = errors.join(" | ") || "all models failed";
+  lastRefineGeminiError.value = errors.join(" | ") || "all attempts failed";
   return null;
 }
+
+// 給 Attempt B/C 用的更精簡 system instruction — 砍掉裝飾性指令，只留 schema 重點。
+const SYSTEM_INSTRUCTION_COMPACT = [
+  "你是 EmploYA! 計畫精修 AI。輸出符合 schema 的繁體中文 JSON，不加任何前後文字。",
+  "保留仍合理的舊 task id；新增 task id 用空字串。",
+  "每週 2–4 goals、1–3 resources、2–3 outputs；4 週節奏：盤點→打底→做出來→展示。",
+  "headline ≤ 22 字。",
+].join(" ");
+
+const SYSTEM_INSTRUCTION_NO_SCHEMA = [
+  "你是 EmploYA! 計畫精修 AI。只輸出純 JSON，禁止 markdown / code fence / 前後說明。",
+  "JSON 結構：{headline:string, weeks:[{week:int, title:string, tasks:[{id:string, title:string, description:string, section:'goals'|'resources'|'outputs'}]}]}。",
+  "保留仍合理的舊 task id；新增 task id 用空字串。",
+  "繁體中文。每週 2–4 goals、1–3 resources、2–3 outputs。",
+].join(" ");
 
 function parsePlanJson(text: string): RefinePlan | null {
   const cleaned = text

@@ -515,8 +515,10 @@ class BackendApi {
   /// 「我想投 DevOps 實習」「我已經會 Docker，幫我跳過」）丟給 Gemini，
   /// 請它依現有 [currentPlan] 產出新版（保留 task id 以維持勾選狀態）。
   ///
-  /// 回 `null` 代表 Gemini 不可用 / 後端不通；上層應 fallback。
-  static Future<({CustomPlan plan, bool fromAi})?> refinePlan({
+  /// 回 `null` 代表後端不通（連線層級失敗）。`fromAi: false` 代表後端有回，
+  /// 但 Gemini 那邊掛了；此時 [message] 會帶人話錯誤訊息給上層 UI 顯示。
+  static Future<({CustomPlan plan, bool fromAi, String? message})?>
+      refinePlan({
     required String prompt,
     required CustomPlan currentPlan,
     required AppMode mode,
@@ -534,6 +536,7 @@ class BackendApi {
       final raw = data['plan'];
       if (raw is! Map) return null;
       final fromAi = data['fromAi'] == true;
+      final message = data['message'] as String?;
       final parsed = _customPlanFromRefineJson(
         Map<String, dynamic>.from(raw),
         fallbackHeadline: currentPlan.headline,
@@ -542,6 +545,7 @@ class BackendApi {
       return (
         plan: parsed.copyWith(fromAi: fromAi, goalPrompt: prompt),
         fromAi: fromAi,
+        message: message,
       );
     } catch (_) {
       return null;

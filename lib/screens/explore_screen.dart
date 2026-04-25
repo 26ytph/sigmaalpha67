@@ -105,6 +105,8 @@ class _ExploreScreenState extends State<ExploreScreen> {
         _deck = [..._sourceDeck()]..shuffle();
       }
     });
+    // 不再每 N 張自動跳 dialog；要更新計畫請走「職涯路徑」頁的同步按鈕，
+    // 那裡可以多選想餵給 AI 的滑卡。
   }
 
   Future<void> _resetExplore() async {
@@ -209,6 +211,14 @@ class _ExploreScreenState extends State<ExploreScreen> {
                                 ),
                               ),
                             ],
+                          ),
+                          AppGaps.h2,
+                          const Text(
+                            '到「職涯路徑」按同步即可選要套用的滑卡',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: AppColors.textTertiary,
+                            ),
                           ),
                         ],
                       ),

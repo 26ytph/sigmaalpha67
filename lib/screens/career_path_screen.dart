@@ -1,6 +1,8 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart' show Icons;
 
+import '../data/roles.dart';
+import '../data/startup_skills.dart';
 import '../logic/generate_plan.dart' as plan;
 import '../models/models.dart';
 import '../services/app_repository.dart';
@@ -358,7 +360,22 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
     });
   }
 
-  // —— 「查看更新」：refresh profile + persona + swipes + translations ——
+  // —— 「同步」流程 ——————————————————————————————————————
+  // 1. 先打 refreshAll 把 profile / persona / swipes / translations 從後端拉回。
+  // 2. 算「跟上次同步比起來」的 delta（新增 ❤ 滑卡 / profile 動了 / persona 動了 /
+  //    新技能翻譯）。
+  // 3. 三條岔路：
+  //    a. refreshAll 全失敗 → 顯示無法連線。
+  //    b. delta 全空 → 顯示「無資料」（沒有新東西不要白打 AI）。
+  //    c. 有 delta → 跳出多選 sheet 讓使用者勾要餵給 AI 的滑卡。
+
+  /// 找 role：先在 [roles]（求職）裡找，沒有再到 [startupSkills]（創業）。
+  CareerRole? _lookupRole(String id) {
+    for (final r in roles) {
+      if (r.id == id) return r;
+    }
+    return findStartupSkillById(id);
+  }
 
   Future<void> _checkUpdates() async {
     if (_refreshing) return;
@@ -378,31 +395,137 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
       return;
     }
 
-    final summary = _summarize(result);
-    if (summary.isEmpty) {
-      _showDialog(title: '已是最新內容', body: '個人資料、Persona、滑卡結果都沒有更動 🌸');
-    } else {
-      _showDialog(title: '已同步', body: summary);
+    final delta = AppRepository.diffSync(result.storage);
+    final hasAnyData =
+        result.storage.explore.likedRoleIds.isNotEmpty ||
+            !result.storage.profile.isEmpty;
+    final nothingNew = !delta.firstSync &&
+        delta.newLikedRoleIds.isEmpty &&
+        !delta.profileChanged &&
+        !delta.personaChanged &&
+        delta.newTranslationCount == 0;
+
+    if (nothingNew || (!hasAnyData && delta.firstSync)) {
+      _showDialog(
+        title: '無資料',
+        body: '當下沒有新的滑卡或個人資料更新。\n滑幾張卡或更新 Persona 之後再回來同步看看 🌸',
+      );
+      // 標記同步時間，但不改其他指紋（reflects "已 ack 過目前狀態"）
+      final next =
+          await AppRepository.markSyncedNow(result.storage);
+      if (!mounted) return;
+      widget.onStorageChanged(next);
+      return;
     }
+
+    await _openSyncSelectSheet(
+      delta: delta,
+      profileChanged: delta.profileChanged,
+      personaChanged: delta.personaChanged,
+      newTranslationCount: delta.newTranslationCount,
+    );
   }
 
-  String _summarize(({
-    AppStorage storage,
-    bool? profileChanged,
-    bool? personaChanged,
-    int? exploreChanged,
-    int? translationsChanged,
-  }) r) {
-    final lines = <String>[];
-    if (r.profileChanged == true) lines.add('・個人資料已更新');
-    if (r.personaChanged == true) lines.add('・Persona 已更新');
-    if ((r.exploreChanged ?? 0) > 0) {
-      lines.add('・滑卡結果有 ${r.exploreChanged} 筆變動');
+  /// 多選 sheet：兩區（個人 Persona / 興趣滑卡），使用者勾完按「依所選更新計畫」
+  /// 把所選 persona 條目 + role 串成 prompt 送給 AI refine。
+  ///
+  /// 滑卡會自動去重（後端 `buildSwipeSummary` 已 dedupe，這裡再保險一次），
+  /// 避免同一張卡因為被滑很多次出現多次。
+  Future<void> _openSyncSelectSheet({
+    required ({
+      List<RoleId> newLikedRoleIds,
+      List<RoleId> allLikedRoleIds,
+      bool profileChanged,
+      bool personaChanged,
+      int newTranslationCount,
+      bool firstSync,
+    }) delta,
+    required bool profileChanged,
+    required bool personaChanged,
+    required int newTranslationCount,
+  }) async {
+    // 去重 — 同一個 id 只 lookup 一次。
+    final seen = <String>{};
+    final allRoles = <CareerRole>[];
+    for (final id in delta.allLikedRoleIds) {
+      if (!seen.add(id)) continue;
+      final role = _lookupRole(id);
+      if (role != null) allRoles.add(role);
     }
-    if ((r.translationsChanged ?? 0) > 0) {
-      lines.add('・新增 / 更動 ${r.translationsChanged} 筆技能翻譯');
+    final newSet = delta.newLikedRoleIds.toSet();
+
+    // Persona 區候選：mainInterests + strengths + skillGaps，去重。
+    final persona = widget.storage.persona;
+    final personaItems = <_PersonaItem>[];
+    final personaSeen = <String>{};
+    for (final s in persona.mainInterests) {
+      if (s.trim().isEmpty || !personaSeen.add(s)) continue;
+      personaItems.add(_PersonaItem(label: s, kind: _PersonaKind.interest));
     }
-    return lines.join('\n');
+    for (final s in persona.strengths) {
+      if (s.trim().isEmpty || !personaSeen.add(s)) continue;
+      personaItems.add(_PersonaItem(label: s, kind: _PersonaKind.strength));
+    }
+    for (final s in persona.skillGaps) {
+      if (s.trim().isEmpty || !personaSeen.add(s)) continue;
+      personaItems.add(_PersonaItem(label: s, kind: _PersonaKind.skillGap));
+    }
+
+    final picked = await showCupertinoModalPopup<_SyncPick>(
+      context: context,
+      builder: (ctx) => _SyncSelectSheet(
+        roles: allRoles,
+        newRoleIdSet: newSet,
+        personaItems: personaItems,
+        profileChanged: profileChanged,
+        personaChanged: personaChanged,
+        newTranslationCount: newTranslationCount,
+        firstSync: delta.firstSync,
+      ),
+    );
+    if (picked == null) {
+      // 使用者取消 → 不動同步指紋，下次按同步還會看到同樣的 sheet。
+      return;
+    }
+    if (picked.roleIds.isEmpty && picked.personaLabels.isEmpty) {
+      _showDialog(title: '沒選任何項目', body: '請至少在 Persona 或滑卡其中一區勾一個。');
+      return;
+    }
+
+    // 把所選資料串成自然語言 prompt。
+    final selectedRoles = <CareerRole>[];
+    final pickedSeen = <String>{};
+    for (final id in picked.roleIds) {
+      if (!pickedSeen.add(id)) continue;
+      final role = _lookupRole(id);
+      if (role != null) selectedRoles.add(role);
+    }
+    final roleNames = selectedRoles.map((r) => r.title).toList();
+    final newOnes = selectedRoles.where((r) => newSet.contains(r.id)).toList();
+
+    final promptParts = <String>[];
+    if (picked.personaLabels.isNotEmpty) {
+      promptParts.add(
+        '個人 Persona 重點：${picked.personaLabels.join('、')}。',
+      );
+    }
+    if (newOnes.isNotEmpty) {
+      promptParts.add(
+        '我最近新喜歡了：${newOnes.map((r) => r.title).join('、')}。',
+      );
+    }
+    if (roleNames.isNotEmpty) {
+      promptParts.add('幫我把計畫聚焦在這些方向：${roleNames.join('、')}。');
+    }
+    if (profileChanged || personaChanged) {
+      promptParts.add('我的 Persona / 個人資料剛剛更新了，請一併考慮。');
+    }
+    final composedPrompt = promptParts.join(' ');
+
+    await _runAiRefine(composedPrompt);
+    final fresh = await AppRepository.markSyncedNow(widget.storage);
+    if (!mounted) return;
+    widget.onStorageChanged(fresh);
   }
 
   void _showDialog({required String title, required String body}) {
@@ -450,20 +573,29 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
     setState(() => _aiRefining = false);
     if (res == null) {
       _showDialog(
-        title: 'AI 暫時無法更新',
-        body: '可能是後端離線或 Gemini quota 用光了。\n你還是可以手動編輯任務或稍後再試。',
+        title: '無法連到後端',
+        body: '請檢查 backend 是否有跑（預設 localhost:3001），或網路狀況。',
       );
       return;
     }
     final fresh = await AppRepository.update((p) => p);
     if (!mounted) return;
     widget.onStorageChanged(fresh);
-    _showDialog(
-      title: res.fromAi ? '計畫已根據你的目標更新 ✨' : '已收到，但暫無 AI 結果',
-      body: res.fromAi
-          ? '勾選過的任務若仍然合理會保留打勾狀態。\n你可以再點任意任務 → 編輯 / 刪除來微調。'
-          : '請稍後再試一次，或自己手動編輯週任務。',
-    );
+    if (res.fromAi) {
+      _showDialog(
+        title: '計畫已根據你的目標更新 ✨',
+        body: '勾選過的任務若仍然合理會保留打勾狀態。\n你可以再點任意任務 → 編輯 / 刪除來微調。',
+      );
+    } else {
+      // 後端有回但 Gemini 沒成功 → 顯示具體錯誤訊息給使用者，不只是「暫無 AI 結果」。
+      final reason = (res.message ?? '').trim();
+      _showDialog(
+        title: 'AI 暫時無法更新',
+        body: reason.isEmpty
+            ? '後端有收到請求但 Gemini 沒生成內容。請稍後再試。'
+            : '$reason\n\n你還是可以手動編輯任務、或稍後再試一次。',
+      );
+    }
   }
 
   // —— 編輯 / 新增任務的 modal ————————————————————————————
@@ -2095,6 +2227,643 @@ class _AiRefineSheetState extends State<_AiRefineSheet> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// 同步多選 sheet：列出目前 ❤ 過的滑卡，使用者可勾要餵給 AI 計畫的那幾張。
+// 新滑（自上次同步後）的卡會打 NEW 標、預設勾選；老的預設不勾。
+// =============================================================================
+
+enum _PersonaKind { interest, strength, skillGap }
+
+extension on _PersonaKind {
+  String get sectionLabel {
+    switch (this) {
+      case _PersonaKind.interest:
+        return '興趣方向';
+      case _PersonaKind.strength:
+        return '已具備能力';
+      case _PersonaKind.skillGap:
+        return '待補強';
+    }
+  }
+
+  Color get accent {
+    switch (this) {
+      case _PersonaKind.interest:
+        return AppColors.brandStart;
+      case _PersonaKind.strength:
+        return AppColors.iosGreen;
+      case _PersonaKind.skillGap:
+        return AppColors.iosOrange;
+    }
+  }
+}
+
+class _PersonaItem {
+  const _PersonaItem({required this.label, required this.kind});
+  final String label;
+  final _PersonaKind kind;
+}
+
+/// _SyncSelectSheet 使用者勾完按 confirm 後送回的東西。
+/// `roleIds` = 要送進 AI 計畫的滑卡 id；
+/// `personaLabels` = 要送進 AI 計畫的 persona 條目（mainInterests / strengths / skillGaps）。
+class _SyncPick {
+  const _SyncPick({required this.roleIds, required this.personaLabels});
+  final List<RoleId> roleIds;
+  final List<String> personaLabels;
+}
+
+class _SyncSelectSheet extends StatefulWidget {
+  const _SyncSelectSheet({
+    required this.roles,
+    required this.newRoleIdSet,
+    required this.personaItems,
+    required this.profileChanged,
+    required this.personaChanged,
+    required this.newTranslationCount,
+    required this.firstSync,
+  });
+
+  final List<CareerRole> roles;
+  final Set<String> newRoleIdSet;
+  final List<_PersonaItem> personaItems;
+  final bool profileChanged;
+  final bool personaChanged;
+  final int newTranslationCount;
+  final bool firstSync;
+
+  @override
+  State<_SyncSelectSheet> createState() => _SyncSelectSheetState();
+}
+
+class _SyncSelectSheetState extends State<_SyncSelectSheet> {
+  late final Set<String> _selectedRoles;
+  late final Set<String> _selectedPersona;
+
+  @override
+  void initState() {
+    super.initState();
+    // 滑卡：第一次同步全選；之後預設只選新增加的，沒有新增就 fallback 全選。
+    if (widget.firstSync) {
+      _selectedRoles = widget.roles.map((r) => r.id).toSet();
+    } else {
+      _selectedRoles = {
+        for (final r in widget.roles)
+          if (widget.newRoleIdSet.contains(r.id)) r.id,
+      };
+      if (_selectedRoles.isEmpty) {
+        _selectedRoles.addAll(widget.roles.map((r) => r.id));
+      }
+    }
+    // Persona：預設全選（user 看到後再自己拿掉）。
+    _selectedPersona = widget.personaItems.map((p) => p.label).toSet();
+  }
+
+  void _toggleRole(String id) {
+    setState(() {
+      _selectedRoles.contains(id)
+          ? _selectedRoles.remove(id)
+          : _selectedRoles.add(id);
+    });
+  }
+
+  void _togglePersona(String label) {
+    setState(() {
+      _selectedPersona.contains(label)
+          ? _selectedPersona.remove(label)
+          : _selectedPersona.add(label);
+    });
+  }
+
+  void _selectAllRoles() => setState(() {
+        _selectedRoles
+          ..clear()
+          ..addAll(widget.roles.map((r) => r.id));
+      });
+
+  void _selectNoneRoles() => setState(() => _selectedRoles.clear());
+
+  void _selectNewRolesOnly() => setState(() {
+        _selectedRoles
+          ..clear()
+          ..addAll(widget.newRoleIdSet);
+      });
+
+  void _selectAllPersona() => setState(() {
+        _selectedPersona
+          ..clear()
+          ..addAll(widget.personaItems.map((p) => p.label));
+      });
+
+  void _selectNonePersona() => setState(() => _selectedPersona.clear());
+
+  bool get _hasAnyPick =>
+      _selectedRoles.isNotEmpty || _selectedPersona.isNotEmpty;
+
+  @override
+  Widget build(BuildContext context) {
+    final mq = MediaQuery.of(context);
+    final maxHeight = mq.size.height * 0.88;
+    final newCount = widget.newRoleIdSet.length;
+    final hasPersona = widget.personaItems.isNotEmpty;
+    final hasRoles = widget.roles.isNotEmpty;
+
+    return Container(
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      decoration: const BoxDecoration(
+        color: AppColors.bg,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 10),
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.separator,
+                borderRadius: BorderRadius.circular(999),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: const [
+                      Icon(
+                        CupertinoIcons.checkmark_seal_fill,
+                        size: 18,
+                        color: AppColors.brandStart,
+                      ),
+                      SizedBox(width: 8),
+                      Text(
+                        '挑要套用的內容',
+                        style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w900,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    _summaryLine(newCount),
+                    style: const TextStyle(
+                      fontSize: 12,
+                      height: 1.55,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Container(height: 1, color: AppColors.border),
+            Flexible(
+              child: ListView(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                children: [
+                  // —— 區 1：個人 Persona ——
+                  if (hasPersona)
+                    _SectionHeader(
+                      title: '個人 Persona',
+                      subtitle: '勾要 AI 在計畫裡參考的條目',
+                      countLabel:
+                          '${_selectedPersona.length} / ${widget.personaItems.length}',
+                      actions: [
+                        _miniBtn('全選', _selectAllPersona),
+                        const SizedBox(width: 6),
+                        _miniBtn('全不選', _selectNonePersona),
+                      ],
+                    )
+                  else
+                    const _SectionHeader(
+                      title: '個人 Persona',
+                      subtitle: '尚未有 Persona — 先去「我的檔案」生成 Persona',
+                      countLabel: '0 / 0',
+                      actions: [],
+                    ),
+                  if (hasPersona)
+                    for (final p in widget.personaItems)
+                      _PersonaSelectTile(
+                        item: p,
+                        selected: _selectedPersona.contains(p.label),
+                        onTap: () => _togglePersona(p.label),
+                      ),
+                  const SizedBox(height: 10),
+
+                  // —— 區 2：興趣滑卡 ——
+                  _SectionHeader(
+                    title: '興趣滑卡',
+                    subtitle: '勾要 AI 把計畫聚焦到的職位 / 能力',
+                    countLabel:
+                        '${_selectedRoles.length} / ${widget.roles.length}',
+                    actions: [
+                      _miniBtn('全選', _selectAllRoles),
+                      const SizedBox(width: 6),
+                      _miniBtn('全不選', _selectNoneRoles),
+                      if (newCount > 0) ...[
+                        const SizedBox(width: 6),
+                        _miniBtn('只選新滑的', _selectNewRolesOnly),
+                      ],
+                    ],
+                  ),
+                  if (!hasRoles)
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 4, 16, 12),
+                      child: Text(
+                        '尚未 ❤ 任何滑卡，去「滑卡探索」按幾張再回來。',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textTertiary,
+                        ),
+                      ),
+                    ),
+                  if (hasRoles)
+                    for (final r in widget.roles)
+                      _RoleSelectTile(
+                        role: r,
+                        selected: _selectedRoles.contains(r.id),
+                        isNew: widget.newRoleIdSet.contains(r.id),
+                        onTap: () => _toggleRole(r.id),
+                      ),
+                  const SizedBox(height: 4),
+                ],
+              ),
+            ),
+            Container(height: 1, color: AppColors.border),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: CupertinoButton(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      color: AppColors.surface,
+                      borderRadius: BorderRadius.circular(AppRadii.pill),
+                      onPressed: () => Navigator.pop(context, null),
+                      child: const Text(
+                        '取消',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    flex: 2,
+                    child: CupertinoButton(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      color: AppColors.brandStart,
+                      borderRadius: BorderRadius.circular(AppRadii.pill),
+                      onPressed: !_hasAnyPick
+                          ? null
+                          : () => Navigator.pop(
+                                context,
+                                _SyncPick(
+                                  roleIds: _selectedRoles
+                                      .toList(growable: false),
+                                  personaLabels: _selectedPersona
+                                      .toList(growable: false),
+                                ),
+                              ),
+                      child: const Text(
+                        '依所選更新計畫',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w900,
+                          color: CupertinoColors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _summaryLine(int newCount) {
+    final bits = <String>[];
+    if (widget.firstSync) {
+      bits.add('第一次同步');
+    } else if (newCount > 0) {
+      bits.add('新滑了 $newCount 張');
+    } else {
+      bits.add('沒有新滑卡');
+    }
+    if (widget.profileChanged) bits.add('個人資料有更新');
+    if (widget.personaChanged) bits.add('Persona 有更新');
+    if (widget.newTranslationCount > 0) {
+      bits.add('${widget.newTranslationCount} 筆新技能翻譯');
+    }
+    return '${bits.join('・')}。下方兩區（Persona / 滑卡）都可以勾，沒勾的不會影響計畫。';
+  }
+
+  Widget _miniBtn(String label, VoidCallback onTap) {
+    return CupertinoButton(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      minimumSize: Size.zero,
+      onPressed: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(AppRadii.pill),
+          border: Border.all(color: AppColors.separator),
+        ),
+        child: Text(
+          label,
+          style: const TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w800,
+            color: AppColors.textSecondary,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({
+    required this.title,
+    required this.subtitle,
+    required this.countLabel,
+    required this.actions,
+  });
+
+  final String title;
+  final String subtitle;
+  final String countLabel;
+  final List<Widget> actions;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w900,
+                    color: AppColors.textPrimary,
+                    letterSpacing: 0.4,
+                  ),
+                ),
+              ),
+              Text(
+                countLabel,
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textTertiary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            subtitle,
+            style: const TextStyle(
+              fontSize: 11,
+              height: 1.45,
+              color: AppColors.textTertiary,
+            ),
+          ),
+          if (actions.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Row(children: actions),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _PersonaSelectTile extends StatelessWidget {
+  const _PersonaSelectTile({
+    required this.item,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final _PersonaItem item;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = item.kind.accent;
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+        decoration: BoxDecoration(
+          color: selected
+              ? accent.withValues(alpha: 0.06)
+              : AppColors.surface,
+          borderRadius: BorderRadius.circular(AppRadii.lg),
+          border: Border.all(
+            color: selected ? accent : AppColors.separator,
+            width: selected ? 1.5 : 1,
+          ),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 160),
+              width: 22,
+              height: 22,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: selected ? accent : AppColors.surfaceMuted,
+                shape: BoxShape.circle,
+                border: selected
+                    ? null
+                    : Border.all(color: AppColors.separator, width: 1.5),
+              ),
+              child: selected
+                  ? const Icon(
+                      CupertinoIcons.check_mark,
+                      size: 14,
+                      color: CupertinoColors.white,
+                    )
+                  : null,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                item.label,
+                style: const TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: accent.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                item.kind.sectionLabel,
+                style: TextStyle(
+                  fontSize: 9,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: 0.4,
+                  color: accent,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RoleSelectTile extends StatelessWidget {
+  const _RoleSelectTile({
+    required this.role,
+    required this.selected,
+    required this.isNew,
+    required this.onTap,
+  });
+
+  final CareerRole role;
+  final bool selected;
+  final bool isNew;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+        decoration: BoxDecoration(
+          color: selected
+              ? AppColors.brandStart.withValues(alpha: 0.06)
+              : AppColors.surface,
+          borderRadius: BorderRadius.circular(AppRadii.lg),
+          border: Border.all(
+            color: selected ? AppColors.brandStart : AppColors.separator,
+            width: selected ? 1.5 : 1,
+          ),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 160),
+              width: 22,
+              height: 22,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                gradient: selected ? AppColors.brandGradient : null,
+                color: selected ? null : AppColors.surfaceMuted,
+                shape: BoxShape.circle,
+                border: selected
+                    ? null
+                    : Border.all(color: AppColors.separator, width: 1.5),
+              ),
+              child: selected
+                  ? const Icon(
+                      CupertinoIcons.check_mark,
+                      size: 14,
+                      color: CupertinoColors.white,
+                    )
+                  : null,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          role.title,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                      ),
+                      if (isNew) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppColors.iosGreen.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: const Text(
+                            'NEW',
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w900,
+                              letterSpacing: 0.6,
+                              color: AppColors.iosGreen,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    role.tagline,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      height: 1.45,
+                      color: AppColors.textTertiary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );

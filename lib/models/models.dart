@@ -873,6 +873,63 @@ class CustomPlan {
       );
 }
 
+/// 上次「同步」按下去之後，記錄當時資料的指紋。後續再次按同步時用來算
+/// delta（新滑了哪些卡 / profile 動過了沒 / 技能翻譯有沒有新增），如果
+/// 全部都沒變就顯示「無資料」，避免 AI 白白被打。
+class SyncSnapshot {
+  const SyncSnapshot({
+    this.syncedAt,
+    this.likedRoleIds = const <RoleId>[],
+    this.profileSig = '',
+    this.personaSig = '',
+    this.translationCount = 0,
+  });
+
+  final String? syncedAt;
+  final List<RoleId> likedRoleIds;
+  final String profileSig;
+  final String personaSig;
+  final int translationCount;
+
+  bool get isEmpty => syncedAt == null;
+
+  SyncSnapshot copyWith({
+    String? syncedAt,
+    List<RoleId>? likedRoleIds,
+    String? profileSig,
+    String? personaSig,
+    int? translationCount,
+  }) {
+    return SyncSnapshot(
+      syncedAt: syncedAt ?? this.syncedAt,
+      likedRoleIds: likedRoleIds ?? this.likedRoleIds,
+      profileSig: profileSig ?? this.profileSig,
+      personaSig: personaSig ?? this.personaSig,
+      translationCount: translationCount ?? this.translationCount,
+    );
+  }
+
+  static SyncSnapshot empty() => const SyncSnapshot();
+
+  Map<String, dynamic> toJson() => {
+        'syncedAt': syncedAt,
+        'likedRoleIds': likedRoleIds,
+        'profileSig': profileSig,
+        'personaSig': personaSig,
+        'translationCount': translationCount,
+      };
+
+  static SyncSnapshot fromJson(Map<String, dynamic> j) => SyncSnapshot(
+        syncedAt: j['syncedAt'] as String?,
+        likedRoleIds: List<String>.from(
+          (j['likedRoleIds'] as List?) ?? const [],
+        ),
+        profileSig: (j['profileSig'] as String?) ?? '',
+        personaSig: (j['personaSig'] as String?) ?? '',
+        translationCount: (j['translationCount'] as num?)?.toInt() ?? 0,
+      );
+}
+
 class AppStorage {
   const AppStorage({
     required this.account,
@@ -885,6 +942,7 @@ class AppStorage {
     required this.strike,
     required this.skillTranslations,
     required this.customPlan,
+    required this.lastSync,
   });
 
   final UserAccount account;
@@ -897,6 +955,7 @@ class AppStorage {
   final StrikeState strike;
   final List<SkillTranslation> skillTranslations;
   final CustomPlan customPlan;
+  final SyncSnapshot lastSync;
 
   bool get isAuthenticated => account.isAuthenticated;
   bool get isOnboarded => !profile.isEmpty;
@@ -913,6 +972,7 @@ class AppStorage {
       strike: const StrikeState(current: 0),
       skillTranslations: const [],
       customPlan: CustomPlan.empty(),
+      lastSync: SyncSnapshot.empty(),
     );
   }
 
@@ -927,6 +987,7 @@ class AppStorage {
     StrikeState? strike,
     List<SkillTranslation>? skillTranslations,
     CustomPlan? customPlan,
+    SyncSnapshot? lastSync,
   }) {
     return AppStorage(
       account: account ?? this.account,
@@ -939,6 +1000,7 @@ class AppStorage {
       strike: strike ?? this.strike,
       skillTranslations: skillTranslations ?? this.skillTranslations,
       customPlan: customPlan ?? this.customPlan,
+      lastSync: lastSync ?? this.lastSync,
     );
   }
 
@@ -966,6 +1028,7 @@ class AppStorage {
       'skillTranslations':
           skillTranslations.map((s) => s.toJson()).toList(growable: false),
       'customPlan': customPlan.toJson(),
+      'lastSync': lastSync.toJson(),
     };
   }
 
@@ -1060,6 +1123,11 @@ class AppStorage {
         ? CustomPlan.fromJson(Map<String, dynamic>.from(customPlanRaw))
         : CustomPlan.empty();
 
+    final lastSyncRaw = json['lastSync'];
+    final lastSync = lastSyncRaw is Map
+        ? SyncSnapshot.fromJson(Map<String, dynamic>.from(lastSyncRaw))
+        : SyncSnapshot.empty();
+
     return AppStorage(
       account: account,
       profile: profile,
@@ -1072,6 +1140,7 @@ class AppStorage {
           current: current, lastAnsweredDate: lastAnsweredDate),
       skillTranslations: skillTranslations,
       customPlan: customPlan,
+      lastSync: lastSync,
     );
   }
 }

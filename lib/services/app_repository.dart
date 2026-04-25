@@ -310,6 +310,78 @@ class AppRepository {
     );
   }
 
+  // ===========================================================================
+  // 同步 delta：用來判斷「使用者按下同步後，到底有沒有新東西」。
+  // 沒有新東西時 UI 會顯示「無資料」，避免 AI 白被打。
+  // ===========================================================================
+
+  /// 從目前 storage 算出當下的「指紋」— 用來跟 [AppStorage.lastSync] 比對。
+  static SyncSnapshot snapshotOf(AppStorage s) {
+    // 後端 buildSwipeSummary 對「右滑同一張卡兩次」沒做去重，會回傳重複 id；
+    // 前端 explore 也只在當下 deck 內去重。這裡集中在進入比對前 dedupe 一次，
+    // 讓 sheet / delta / signature 都不會撞到重複職業。
+    final liked = <RoleId>{...s.explore.likedRoleIds}.toList()..sort();
+    final pSig = [
+      s.profile.name,
+      s.profile.currentStage,
+      s.profile.startupInterest ? '1' : '0',
+      ([...s.profile.goals]..sort()).join(','),
+      ([...s.profile.interests]..sort()).join(','),
+    ].join('|');
+    final personaSig = [
+      s.persona.text,
+      s.persona.recommendedNextStep,
+      ([...s.persona.mainInterests]..sort()).join(','),
+    ].join('|');
+    return SyncSnapshot(
+      syncedAt: s.lastSync.syncedAt,
+      likedRoleIds: liked,
+      profileSig: pSig,
+      personaSig: personaSig,
+      translationCount: s.skillTranslations.length,
+    );
+  }
+
+  /// 同步成功後把當下指紋寫進 storage，作為下一次比對的基準。
+  static Future<AppStorage> markSyncedNow(AppStorage s) async {
+    final snap = snapshotOf(s).copyWith(
+      syncedAt: DateTime.now().toIso8601String(),
+    );
+    return update((prev) => prev.copyWith(lastSync: snap));
+  }
+
+  /// 比對「上次同步時的指紋」vs「現在的 storage」，產出可餵給 UI 的 delta。
+  /// `newLikedRoleIds` = 自上次同步以來新增加的 ❤ 滑卡。
+  /// `allLikedRoleIds` = 目前所有 ❤ 滑卡（給多選 sheet 顯示）。
+  static ({
+    List<RoleId> newLikedRoleIds,
+    List<RoleId> allLikedRoleIds,
+    bool profileChanged,
+    bool personaChanged,
+    int newTranslationCount,
+    bool firstSync,
+  }) diffSync(AppStorage s) {
+    final cur = snapshotOf(s);
+    final last = s.lastSync;
+    final firstSync = last.isEmpty;
+
+    final lastLiked = last.likedRoleIds.toSet();
+    final newLiked = <RoleId>[];
+    for (final id in cur.likedRoleIds) {
+      if (firstSync || !lastLiked.contains(id)) newLiked.add(id);
+    }
+    return (
+      newLikedRoleIds: newLiked,
+      allLikedRoleIds: cur.likedRoleIds,
+      profileChanged: !firstSync && cur.profileSig != last.profileSig,
+      personaChanged: !firstSync && cur.personaSig != last.personaSig,
+      newTranslationCount: firstSync
+          ? cur.translationCount
+          : (cur.translationCount - last.translationCount).clamp(0, 1 << 30),
+      firstSync: firstSync,
+    );
+  }
+
   /// 對稱差（不在意順序）— 回傳 a∆b 的元素數。
   static int _stringListDelta(List<String> a, List<String> b) {
     final sa = a.toSet();
@@ -515,8 +587,10 @@ class AppRepository {
   }
 
   /// 用 [BackendApi.refinePlan] 跑一輪 AI 更新；done 狀態與 userAdded 任務
-  /// 在前端做 merge 以求穩定。回 null = AI 不可用，UI 應提示。
-  static Future<({CustomPlan plan, bool fromAi})?> refinePlanWithAi({
+  /// 在前端做 merge 以求穩定。回 null = 後端不通；`fromAi: false` 代表
+  /// 後端有回但 Gemini 沒生成（[message] 會帶人話錯誤）。
+  static Future<({CustomPlan plan, bool fromAi, String? message})?>
+      refinePlanWithAi({
     required String prompt,
     required AppStorage storage,
   }) async {
@@ -562,7 +636,7 @@ class AppRepository {
     }
     final merged = remote.plan.copyWith(weeks: mergedWeeks);
     await setCustomPlan(merged);
-    return (plan: merged, fromAi: remote.fromAi);
+    return (plan: merged, fromAi: remote.fromAi, message: remote.message);
   }
 
   static Future<void> setWeekNote({
