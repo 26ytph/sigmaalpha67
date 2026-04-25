@@ -1,7 +1,6 @@
 import 'package:flutter/cupertino.dart';
 
 import '../data/interests_catalog.dart';
-import '../logic/persona_engine.dart';
 import '../models/models.dart';
 import '../services/app_repository.dart';
 import '../utils/theme.dart';
@@ -46,16 +45,41 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   List<String> _recommendedInterests = [];
 
   int _step = 0;
+  bool _saving = false;
   static const _totalSteps = 5;
 
-  static const _gradeOptions = ['高中', '大一', '大二', '大三', '大四', '研究生', '畢業 1–3 年', '已工作'];
+  static const _gradeOptions = [
+    '高中',
+    '大一',
+    '大二',
+    '大三',
+    '大四',
+    '研究生',
+    '畢業 1–3 年',
+    '已工作',
+  ];
   static const _stageOptions = ['在學探索', '應屆畢業生', '想找實習', '想找正職', '想轉職', '創業探索'];
   static const _goalOptions = [
-    '找實習', '找正職', '想轉職', '想創業', '釐清方向', '補強技能', '寫履歷', '練面試',
+    '找實習',
+    '找正職',
+    '想轉職',
+    '想創業',
+    '釐清方向',
+    '補強技能',
+    '寫履歷',
+    '練面試',
   ];
   static const _experienceOptions = [
-    '社團幹部', '系上活動', '課內專案', '實習', '工讀／打工', '比賽／黑客松',
-    '志工服務', '家教／助教', '個人作品', '經營粉專／IG',
+    '社團幹部',
+    '系上活動',
+    '課內專案',
+    '實習',
+    '工讀／打工',
+    '比賽／黑客松',
+    '志工服務',
+    '家教／助教',
+    '個人作品',
+    '經營粉專／IG',
   ];
 
   @override
@@ -228,16 +252,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Future<void> _finish() async {
-    final eduParts = [
+    if (_saving) return;
+    final defaultEducation = [
       _school.text.trim(),
       if (!_isHighSchool) _department.text.trim(),
       _grade,
     ].where((s) => s.isNotEmpty).toList();
-    final defaultEducation = eduParts.join(' ');
 
     final eduList = widget.initialProfile.educationItems.isNotEmpty
         ? widget.initialProfile.educationItems
-        : (defaultEducation.isNotEmpty ? [defaultEducation] : <String>[]);
+        : defaultEducation;
 
     final profile = UserProfile(
       name: _name.text.trim(),
@@ -254,24 +278,20 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       educationItems: eduList,
       concerns: _concerns.text.trim(),
       startupInterest: _startupInterest,
-      createdAt: widget.initialProfile.createdAt ??
-          DateTime.now().toIso8601String(),
+      createdAt:
+          widget.initialProfile.createdAt ?? DateTime.now().toIso8601String(),
     );
 
     final selfIntroText = _selfIntro.text.trim();
 
-    final next = await AppRepository.update((prev) {
-      final base = PersonaEngine.generate(
-        profile: profile,
-        explore: prev.explore,
-        skillTranslations: prev.skillTranslations,
-        previous: prev.persona,
-      );
-      final newPersona = base.copyWith(text: selfIntroText, userEdited: true);
-      return prev.copyWith(profile: profile, persona: newPersona);
-    });
+    setState(() => _saving = true);
+    final next = await AppRepository.completeOnboarding(
+      profile: profile,
+      selfIntro: selfIntroText,
+    );
 
     if (!mounted) return;
+    setState(() => _saving = false);
     widget.onCompleted(next);
   }
 
@@ -370,7 +390,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               ),
             ),
             _ContinueBar(
-              canNext: _canNext,
+              canNext: _canNext && !_saving,
               isLast: _step == _totalSteps - 1,
               onNext: _next,
             ),
@@ -414,7 +434,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(small, style: const TextStyle(fontSize: 12, color: AppColors.textTertiary)),
+        Text(
+          small,
+          style: const TextStyle(fontSize: 12, color: AppColors.textTertiary),
+        ),
         AppGaps.h4,
         Text(
           big,
@@ -747,7 +770,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           _label('自介（選填）'),
           const Text(
             '寫不出來也沒關係，留空就好；有想說的就用自己的話寫。',
-            style: TextStyle(fontSize: 11, color: AppColors.textTertiary, height: 1.5),
+            style: TextStyle(
+              fontSize: 11,
+              color: AppColors.textTertiary,
+              height: 1.5,
+            ),
           ),
           AppGaps.h6,
           CupertinoTextField(
@@ -872,7 +899,11 @@ class _ChipGroup extends StatelessWidget {
 }
 
 class _Chip extends StatelessWidget {
-  const _Chip({required this.label, required this.selected, required this.onTap});
+  const _Chip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
 
   final String label;
   final bool selected;

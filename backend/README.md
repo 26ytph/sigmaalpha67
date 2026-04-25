@@ -46,6 +46,7 @@ All fake/rule-based logic is grouped so you can swap files individually:
 | Daily questions | `src/data/dailyQuestions.ts` | CMS / editorial DB |
 | Plan templates per top-tag | `src/data/planTemplates.ts` | LLM-generated plans |
 | Startup resources catalogue | `src/data/startupResources.ts` | curated DB / external feed |
+| RAG knowledge base seed | `src/data/knowledgeBase.ts` | Supabase pgvector / curated CMS |
 | Admin dashboard metrics | `src/data/adminMetrics.ts` | warehouse aggregations |
 | Persona generation | `src/engines/persona.ts` | LLM call |
 | Skill translation | `src/engines/skillTranslator.ts` | LLM call |
@@ -121,6 +122,18 @@ Health: `GET /api/health`
 - `POST   /api/auth/refresh`
 - `DELETE /api/auth/logout`
 - `DELETE /api/users/me`
+
+### 12. Knowledge Base / RAG
+- `POST /api/rag/query`      ??retrieve policy/course/startup/FAQ chunks and answer
+- `POST /api/rag/index`      ??seed or add knowledge sources
+- `POST /api/rag/reindex`    ??rebuild local embeddings for stored sources
+- `POST /api/knowledge`      ??add counselor-approved FAQ/resource into KB
+- `GET  /api/knowledge`      ??list knowledge sources
+- `GET  /api/knowledge/search?q=` ??debug/search retrieved chunks
+
+`/api/chat/messages` also calls RAG automatically for policy, subsidy, course,
+startup, internship, career-consulting, and FAQ-style questions. Set
+`context.useRag=false` to force the older mock chat reply.
 
 ## Project layout
 

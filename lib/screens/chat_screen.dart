@@ -6,6 +6,7 @@ import 'package:flutter/cupertino.dart';
 import '../logic/counselor_brief.dart';
 import '../logic/intent_normalizer.dart';
 import '../models/models.dart';
+import '../services/app_repository.dart';
 import '../utils/theme.dart';
 
 class ChatMessage {
@@ -39,6 +40,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final Random _random = Random();
+  String? _conversationId;
   bool _typing = false;
 
   @override
@@ -84,7 +86,10 @@ class _ChatScreenState extends State<ChatScreen> {
     if (p.contains('計畫') || p.contains('plan') || p.contains('todo')) {
       return '可以從「計畫」分頁的 4–8 週清單開始，挑一週先完成 1 個小任務累積動能，比一次塞滿更容易持續。';
     }
-    if (p.contains('興趣') || p.contains('探索') || p.contains('方向') || p.contains('迷惘')) {
+    if (p.contains('興趣') ||
+        p.contains('探索') ||
+        p.contains('方向') ||
+        p.contains('迷惘')) {
       return '不確定方向時，建議到「探索」分頁滑 20 張卡，把按 ❤ 的職位列出來，再看共同的關鍵字 — 那通常就是你的興趣輪廓。Persona 也會跟著更新。';
     }
     if (p.contains('創業') || p.contains('開店') || p.contains('做生意')) {
@@ -93,7 +98,10 @@ class _ChatScreenState extends State<ChatScreen> {
     if (p.contains('壓力') || p.contains('焦慮') || p.contains('累')) {
       return '聽起來最近真的有點累，先深呼吸一下。把今天能做的事縮到最小一步：寫下 1 件想釐清的事 + 1 個可以問的人，先動起來再說。';
     }
-    if (p.contains('你好') || p.contains('hi') || p.contains('hello') || p.contains('哈囉')) {
+    if (p.contains('你好') ||
+        p.contains('hi') ||
+        p.contains('hello') ||
+        p.contains('哈囉')) {
       return '哈囉！想從哪裡開始？我可以陪你想方向、整理履歷、拆解計畫，或聊聊心情。';
     }
     if (n.intents.contains('資源／政策')) {
@@ -131,13 +139,32 @@ class _ChatScreenState extends State<ChatScreen> {
     });
     _scrollToBottom();
 
-    await Future.delayed(Duration(milliseconds: 600 + _random.nextInt(500)));
+    String reply;
+    bool shouldHandoff;
+    try {
+      final remote = await AppRepository.sendChatMessage(
+        conversationId: _conversationId,
+        message: text,
+        mode: widget.storage.profile.mode,
+      );
+      _conversationId = remote.conversationId ?? _conversationId;
+      reply = remote.reply;
+      if (remote.usedRag && remote.sourceTitles.isNotEmpty) {
+        reply =
+            '$reply\n\nRAG: ${remote.ragProvider ?? 'backend'} | ${remote.sourceTitles.take(3).join('、')}';
+      } else if (remote.chatProvider == 'gemini') {
+        reply = '$reply\n\n— Gemini chat';
+      }
+      shouldHandoff = remote.shouldHandoff;
+    } catch (_) {
+      await Future.delayed(Duration(milliseconds: 600 + _random.nextInt(500)));
+      reply = _mockReply(text, normalized);
+      shouldHandoff =
+          normalized.urgency == '高' ||
+          normalized.urgency == '中高' ||
+          normalized.intents.length >= 2;
+    }
     if (!mounted) return;
-
-    final reply = _mockReply(text, normalized);
-    final shouldHandoff = normalized.urgency == '高' ||
-        normalized.urgency == '中高' ||
-        normalized.intents.length >= 2;
 
     setState(() {
       _messages.add(
@@ -200,7 +227,9 @@ class _ChatScreenState extends State<ChatScreen> {
               child: ListView.builder(
                 controller: _scrollController,
                 padding: const EdgeInsets.symmetric(
-                    horizontal: 16, vertical: 14),
+                  horizontal: 16,
+                  vertical: 14,
+                ),
                 itemCount: _messages.length + (_typing ? 1 : 0),
                 itemBuilder: (context, index) {
                   if (_typing && index == _messages.length) {
@@ -272,10 +301,7 @@ class _MessageBubble extends StatelessWidget {
     );
 
     final decoration = fromUser
-        ? BoxDecoration(
-            gradient: AppColors.brandGradient,
-            borderRadius: radius,
-          )
+        ? BoxDecoration(gradient: AppColors.brandGradient, borderRadius: radius)
         : BoxDecoration(
             color: AppColors.surface,
             borderRadius: radius,
@@ -346,8 +372,11 @@ class _NormalizedChip extends StatelessWidget {
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(CupertinoIcons.wand_stars,
-                        size: 12, color: AppColors.brandStart),
+                    const Icon(
+                      CupertinoIcons.wand_stars,
+                      size: 12,
+                      color: AppColors.brandStart,
+                    ),
                     AppGaps.w6,
                     Text(
                       'AI 結構化問題',
@@ -360,11 +389,14 @@ class _NormalizedChip extends StatelessWidget {
                     ),
                     AppGaps.w8,
                     Container(
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 1,
+                      ),
                       decoration: BoxDecoration(
-                        color: _urgencyColor(normalized.urgency)
-                            .withValues(alpha: 0.15),
+                        color: _urgencyColor(
+                          normalized.urgency,
+                        ).withValues(alpha: 0.15),
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: Text(
@@ -453,8 +485,11 @@ class _HandoffPrompt extends StatelessWidget {
             child: const Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(CupertinoIcons.person_2_fill,
-                    size: 14, color: AppColors.brandStart),
+                Icon(
+                  CupertinoIcons.person_2_fill,
+                  size: 14,
+                  color: AppColors.brandStart,
+                ),
                 AppGaps.w6,
                 Text(
                   '需要真人諮詢師？產生交接單',
@@ -509,7 +544,9 @@ class _CounselorBriefSheet extends StatelessWidget {
                   children: [
                     Container(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 4),
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
                       decoration: BoxDecoration(
                         gradient: AppColors.brandGradient,
                         borderRadius: BorderRadius.circular(AppRadii.pill),
@@ -766,8 +803,7 @@ class _Composer extends StatelessWidget {
               maxLines: 5,
               enabled: enabled,
               placeholder: '想問什麼？口語就行…',
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 14, vertical: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               decoration: BoxDecoration(
                 color: AppColors.surfaceMuted,
                 borderRadius: BorderRadius.circular(22),

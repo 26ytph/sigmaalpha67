@@ -1,17 +1,29 @@
 # employa
 
-A new Flutter project.
+Flutter app + Next.js backend for EmploYA.
 
 ## Getting Started
 
-This project is a starting point for a Flutter application.
+Run the backend first:
 
-A few resources to get you started if this is your first Flutter project:
+```powershell
+cd backend
+npm install
+npm run dev
+```
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+Then run the Flutter web app against that backend:
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```powershell
+flutter pub get
+flutter run -d chrome --dart-define=EMPLOYA_API_BASE_URL=http://localhost:3001
+```
+
+The backend uses fake Bearer auth for the hackathon MVP. The Flutter app sends
+`demo-user` by default; override it with:
+
+```powershell
+flutter run -d chrome `
+  --dart-define=EMPLOYA_API_BASE_URL=http://localhost:3001 `
+  --dart-define=EMPLOYA_API_TOKEN=demo-user
+```

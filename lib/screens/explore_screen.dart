@@ -1,7 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
 
 import '../data/roles.dart';
-import '../logic/persona_engine.dart';
 import '../models/models.dart';
 import '../services/app_repository.dart';
 import '../utils/theme.dart';
@@ -51,6 +52,12 @@ class _ExploreScreenState extends State<ExploreScreen> {
 
   void _swipe(SwipeDirection dir) {
     final role = _current;
+    unawaited(
+      AppRepository.recordSwipe(
+        cardId: role.id,
+        liked: dir == SwipeDirection.right,
+      ),
+    );
 
     _persist((prev) {
       final liked = [...prev.explore.likedRoleIds];
@@ -114,17 +121,9 @@ class _ExploreScreenState extends State<ExploreScreen> {
     setState(() => _sinceLastPrompt = 0);
 
     if (yes != true) return;
-    await _persist((prev) {
-      // 重新計算 Persona 結構化欄位（mainInterests / strengths / nextStep…），
-      // 但不會覆寫使用者寫的自介 (persona.text)。
-      final newPersona = PersonaEngine.generate(
-        profile: prev.profile,
-        explore: prev.explore,
-        skillTranslations: prev.skillTranslations,
-        previous: prev.persona,
-      );
-      return prev.copyWith(persona: newPersona);
-    });
+    final next = await AppRepository.refreshPersonaFromBackend();
+    if (!mounted) return;
+    widget.onStorageChanged(next);
   }
 
   Future<void> _resetExplore() async {
@@ -149,10 +148,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
     if (go != true) return;
     await _persist(
       (prev) => prev.copyWith(
-        explore: const ExploreResults(
-          likedRoleIds: [],
-          dislikedRoleIds: [],
-        ),
+        explore: const ExploreResults(likedRoleIds: [], dislikedRoleIds: []),
       ),
     );
     setState(() {
@@ -211,8 +207,11 @@ class _ExploreScreenState extends State<ExploreScreen> {
                         children: [
                           Row(
                             children: [
-                              const Icon(CupertinoIcons.heart_fill,
-                                  size: 12, color: AppColors.brandStart),
+                              const Icon(
+                                CupertinoIcons.heart_fill,
+                                size: 12,
+                                color: AppColors.brandStart,
+                              ),
                               AppGaps.w4,
                               Text(
                                 '$likedCount',
@@ -316,7 +315,10 @@ class _ExploreScreenState extends State<ExploreScreen> {
                   AppGaps.h12,
                   Center(
                     child: CupertinoButton(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
                       minimumSize: Size.zero,
                       onPressed: _resetExplore,
                       child: const Text(
@@ -372,7 +374,9 @@ class _RoundSwipeButton extends StatelessWidget {
               color: gradient == null ? (bg ?? AppColors.surface) : null,
               gradient: gradient,
               shape: BoxShape.circle,
-              boxShadow: gradient != null ? AppColors.shadow : AppColors.shadowSoft,
+              boxShadow: gradient != null
+                  ? AppColors.shadow
+                  : AppColors.shadowSoft,
             ),
             child: Icon(icon, color: iconColor, size: size * 0.42),
           ),

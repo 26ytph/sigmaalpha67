@@ -59,10 +59,10 @@ class _PersonaScreenState extends State<PersonaScreen> {
     super.dispose();
   }
 
-  Future<void> _persist(AppStorage Function(AppStorage prev) fn) async {
+  Future<AppStorage> _persist(AppStorage Function(AppStorage prev) fn) async {
     final next = await AppRepository.update(fn);
-    if (!mounted) return;
-    widget.onStorageChanged(next);
+    if (mounted) widget.onStorageChanged(next);
+    return next;
   }
 
   Future<void> _saveSummary() async {
@@ -75,6 +75,7 @@ class _PersonaScreenState extends State<PersonaScreen> {
       );
       return prev.copyWith(persona: updated);
     });
+    await AppRepository.syncPersonaText(text);
     setState(() => _summaryEditing = false);
   }
 
@@ -98,12 +99,14 @@ class _PersonaScreenState extends State<PersonaScreen> {
     final go = await showCupertinoDialog<bool>(
       context: context,
       builder: (ctx) => CupertinoAlertDialog(
-        title: Text(widget.storage.profile.startupInterest
-            ? '切換回求職版本？'
-            : '切換為創業版本？'),
-        content: Text(widget.storage.profile.startupInterest
-            ? '首頁、計畫與 AI 諮詢將回到一般求職情境。'
-            : '首頁主推創業 To-do 與資源連結，AI 諮詢會優先用創業導師模型。'),
+        title: Text(
+          widget.storage.profile.startupInterest ? '切換回求職版本？' : '切換為創業版本？',
+        ),
+        content: Text(
+          widget.storage.profile.startupInterest
+              ? '首頁、計畫與 AI 諮詢將回到一般求職情境。'
+              : '首頁主推創業 To-do 與資源連結，AI 諮詢會優先用創業導師模型。',
+        ),
         actions: [
           CupertinoDialogAction(
             onPressed: () => Navigator.pop(ctx, false),
@@ -118,10 +121,13 @@ class _PersonaScreenState extends State<PersonaScreen> {
       ),
     );
     if (go != true) return;
-    await _persist((prev) {
-      final p = prev.profile.copyWith(startupInterest: !prev.profile.startupInterest);
+    final next = await _persist((prev) {
+      final p = prev.profile.copyWith(
+        startupInterest: !prev.profile.startupInterest,
+      );
       return prev.copyWith(profile: p);
     });
+    await AppRepository.syncProfile(next.profile);
   }
 
   // —— 列表編輯：教育／經歷／技能／興趣 ——
@@ -132,7 +138,7 @@ class _PersonaScreenState extends State<PersonaScreen> {
     required String value,
   }) async {
     final v = value.trim();
-    await _persist((prev) {
+    final next = await _persist((prev) {
       var profile = prev.profile;
       var persona = prev.persona;
       switch (section) {
@@ -192,12 +198,13 @@ class _PersonaScreenState extends State<PersonaScreen> {
       }
       return prev.copyWith(profile: profile, persona: persona);
     });
+    await AppRepository.syncProfile(next.profile);
     setState(() => _activeEdit = null);
   }
 
   Future<void> _savePersonalField(String field, String value) async {
     final v = value.trim();
-    await _persist((prev) {
+    final next = await _persist((prev) {
       var p = prev.profile;
       switch (field) {
         case 'name':
@@ -221,6 +228,7 @@ class _PersonaScreenState extends State<PersonaScreen> {
       }
       return prev.copyWith(profile: p);
     });
+    await AppRepository.syncProfile(next.profile);
     setState(() => _personalEdit = null);
   }
 
@@ -420,16 +428,21 @@ class _PersonaScreenState extends State<PersonaScreen> {
   }
 
   Widget _heroCard(UserProfile profile, bool isStartup) {
-    final letter =
-        profile.name.isNotEmpty ? profile.name.characters.first : '?';
-    final subline = [profile.department, profile.grade, profile.currentStage]
-        .where((s) => s.isNotEmpty)
-        .join(' ・ ');
+    final letter = profile.name.isNotEmpty
+        ? profile.name.characters.first
+        : '?';
+    final subline = [
+      profile.department,
+      profile.grade,
+      profile.currentStage,
+    ].where((s) => s.isNotEmpty).join(' ・ ');
 
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 22, 20, 20),
       decoration: BoxDecoration(
-        gradient: isStartup ? AppColors.startupGradient : AppColors.brandGradient,
+        gradient: isStartup
+            ? AppColors.startupGradient
+            : AppColors.brandGradient,
         borderRadius: BorderRadius.circular(AppRadii.xxl),
         boxShadow: AppColors.shadow,
       ),
@@ -474,7 +487,9 @@ class _PersonaScreenState extends State<PersonaScreen> {
                   children: [
                     Container(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 2),
+                        horizontal: 8,
+                        vertical: 2,
+                      ),
                       decoration: BoxDecoration(
                         color: CupertinoColors.white.withValues(alpha: 0.25),
                         borderRadius: BorderRadius.circular(AppRadii.pill),
@@ -604,7 +619,9 @@ class _PersonaScreenState extends State<PersonaScreen> {
                     children: [
                       CupertinoButton(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 8),
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
                         minimumSize: Size.zero,
                         onPressed: () {
                           setState(() {
@@ -623,7 +640,9 @@ class _PersonaScreenState extends State<PersonaScreen> {
                       const Spacer(),
                       CupertinoButton(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 8),
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
                         minimumSize: Size.zero,
                         color: AppColors.iosBlue,
                         borderRadius: BorderRadius.circular(AppRadii.pill),
@@ -669,8 +688,11 @@ class _PersonaScreenState extends State<PersonaScreen> {
                             ),
                     ),
                     AppGaps.w8,
-                    const Icon(CupertinoIcons.pencil,
-                        size: 14, color: AppColors.textTertiary),
+                    const Icon(
+                      CupertinoIcons.pencil,
+                      size: 14,
+                      color: AppColors.textTertiary,
+                    ),
                   ],
                 ),
               ),
@@ -748,8 +770,11 @@ class _PersonaScreenState extends State<PersonaScreen> {
           ),
           child: Row(
             children: [
-              const Icon(CupertinoIcons.arrow_right_circle,
-                  size: 14, color: AppColors.iosBlue),
+              const Icon(
+                CupertinoIcons.arrow_right_circle,
+                size: 14,
+                color: AppColors.iosBlue,
+              ),
               AppGaps.w6,
               Text(
                 label,
@@ -804,8 +829,11 @@ class _PersonaScreenState extends State<PersonaScreen> {
                   ),
                 ),
               ),
-              const Icon(CupertinoIcons.chevron_right,
-                  size: 14, color: AppColors.textTertiary),
+              const Icon(
+                CupertinoIcons.chevron_right,
+                size: 14,
+                color: AppColors.textTertiary,
+              ),
             ],
           ),
         ),
@@ -819,8 +847,11 @@ class _PersonaScreenState extends State<PersonaScreen> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(CupertinoIcons.flag,
-              size: 14, color: AppColors.textTertiary),
+          const Icon(
+            CupertinoIcons.flag,
+            size: 14,
+            color: AppColors.textTertiary,
+          ),
           AppGaps.w6,
           Expanded(
             child: Text(
@@ -1023,7 +1054,10 @@ class _IosListRowState extends State<_IosListRow> {
                 controller: _ctl,
                 autofocus: true,
                 placeholder: widget.placeholder,
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
                   color: AppColors.bg,
                   borderRadius: BorderRadius.circular(AppRadii.sm),
@@ -1036,22 +1070,23 @@ class _IosListRowState extends State<_IosListRow> {
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               minimumSize: Size.zero,
               onPressed: widget.onCancel,
-              child: const Text('取消',
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: AppColors.textTertiary,
-                  )),
+              child: const Text(
+                '取消',
+                style: TextStyle(fontSize: 14, color: AppColors.textTertiary),
+              ),
             ),
             CupertinoButton(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               minimumSize: Size.zero,
               onPressed: () => widget.onSave(_ctl.text),
-              child: const Text('儲存',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.iosBlue,
-                  )),
+              child: const Text(
+                '儲存',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.iosBlue,
+                ),
+              ),
             ),
           ],
         ),
@@ -1088,8 +1123,11 @@ class _IosListRowState extends State<_IosListRow> {
               ),
             ),
             const SizedBox(width: 6),
-            const Icon(CupertinoIcons.chevron_right,
-                size: 14, color: AppColors.textTertiary),
+            const Icon(
+              CupertinoIcons.chevron_right,
+              size: 14,
+              color: AppColors.textTertiary,
+            ),
           ],
         ),
       ),
@@ -1207,7 +1245,8 @@ class _ListSection extends StatelessWidget {
     required String section,
     required int index,
     required String value,
-  }) onSave;
+  })
+  onSave;
   final String placeholder;
 
   bool get _addingNew => activeEdit == '$section:new';
@@ -1223,8 +1262,11 @@ class _ListSection extends StatelessWidget {
         child: const Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(CupertinoIcons.add_circled_solid,
-                size: 14, color: AppColors.iosBlue),
+            Icon(
+              CupertinoIcons.add_circled_solid,
+              size: 14,
+              color: AppColors.iosBlue,
+            ),
             AppGaps.w4,
             Text(
               '新增',
@@ -1249,8 +1291,7 @@ class _ListSection extends StatelessWidget {
                   initial: '',
                   placeholder: placeholder,
                   onCancel: () => onSetActive(null),
-                  onSave: (v) =>
-                      onSave(section: section, index: -1, value: v),
+                  onSave: (v) => onSave(section: section, index: -1, value: v),
                   onDelete: null,
                   accent: accentColor,
                 ),
@@ -1306,10 +1347,10 @@ class _ListSection extends StatelessWidget {
                               initial: items[i],
                               placeholder: placeholder,
                               onCancel: () => onSetActive(null),
-                              onSave: (v) => onSave(
-                                  section: section, index: i, value: v),
-                              onDelete: () => onSave(
-                                  section: section, index: i, value: ''),
+                              onSave: (v) =>
+                                  onSave(section: section, index: i, value: v),
+                              onDelete: () =>
+                                  onSave(section: section, index: i, value: ''),
                               accent: accentColor,
                             )
                           : _Row(
@@ -1358,8 +1399,11 @@ class _Chip extends StatelessWidget {
               ),
             ),
             AppGaps.w6,
-            Icon(CupertinoIcons.pencil,
-                size: 11, color: accent.withValues(alpha: 0.7)),
+            Icon(
+              CupertinoIcons.pencil,
+              size: 11,
+              color: accent.withValues(alpha: 0.7),
+            ),
           ],
         ),
       ),
@@ -1404,8 +1448,11 @@ class _Row extends StatelessWidget {
                 ),
               ),
             ),
-            const Icon(CupertinoIcons.pencil,
-                size: 13, color: AppColors.textTertiary),
+            const Icon(
+              CupertinoIcons.pencil,
+              size: 13,
+              color: AppColors.textTertiary,
+            ),
           ],
         ),
       ),
@@ -1478,7 +1525,9 @@ class _InlineEditRowState extends State<_InlineEditRow> {
               if (widget.onDelete != null)
                 CupertinoButton(
                   padding: const EdgeInsets.symmetric(
-                      horizontal: 12, vertical: 6),
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
                   minimumSize: Size.zero,
                   onPressed: widget.onDelete,
                   child: const Text(
@@ -1493,7 +1542,9 @@ class _InlineEditRowState extends State<_InlineEditRow> {
               const Spacer(),
               CupertinoButton(
                 padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 6),
+                  horizontal: 12,
+                  vertical: 6,
+                ),
                 minimumSize: Size.zero,
                 onPressed: widget.onCancel,
                 child: const Text(
@@ -1508,7 +1559,9 @@ class _InlineEditRowState extends State<_InlineEditRow> {
               AppGaps.w8,
               CupertinoButton(
                 padding: const EdgeInsets.symmetric(
-                    horizontal: 16, vertical: 6),
+                  horizontal: 16,
+                  vertical: 6,
+                ),
                 minimumSize: Size.zero,
                 color: AppColors.iosBlue,
                 borderRadius: BorderRadius.circular(AppRadii.pill),
