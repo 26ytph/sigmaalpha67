@@ -369,6 +369,68 @@ export async function insertChatMessage(
   if (error) console.warn("[db] insertChatMessage failed:", error.message);
 }
 
+// ---------------------------------------------------------------------------
+// COUNSELOR FAQS  (持久化諮詢師回過的問答 → 重啟後 RAG 仍能命中)
+// ---------------------------------------------------------------------------
+
+export type StoredCounselorFaq = {
+  id: string;
+  question: string;
+  answer: string;
+  tags: string[];
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export async function upsertCounselorFaq(input: {
+  id: string;
+  question: string;
+  answer: string;
+  tags: string[];
+  createdBy: string | null;
+}): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return;
+  const { error } = await supabase.from("counselor_faqs").upsert(
+    {
+      id: input.id,
+      question: input.question,
+      answer: input.answer,
+      tags: input.tags,
+      created_by: input.createdBy,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "id" },
+  );
+  if (error) console.warn("[db] upsertCounselorFaq failed:", error.message);
+}
+
+export async function listCounselorFaqs(
+  limit = 200,
+): Promise<StoredCounselorFaq[]> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from("counselor_faqs")
+    .select("*")
+    .order("updated_at", { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.warn("[db] listCounselorFaqs failed:", error.message);
+    return [];
+  }
+  return (data ?? []).map((r: Record<string, unknown>) => ({
+    id: (r.id as string) ?? "",
+    question: (r.question as string) ?? "",
+    answer: (r.answer as string) ?? "",
+    tags: Array.isArray(r.tags) ? (r.tags as string[]) : [],
+    createdBy: (r.created_by as string | null) ?? null,
+    createdAt: (r.created_at as string) ?? "",
+    updatedAt: (r.updated_at as string) ?? "",
+  }));
+}
+
 /**
  * 把某個使用者訊息對應的 normalized_questions row 標成已解決（諮詢師回完了）。
  * 該 user msg 沒有 normalized row 時就 noop — 表示是 KB 直接命中那條，

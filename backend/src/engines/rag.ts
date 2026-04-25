@@ -1,4 +1,5 @@
 import { KNOWLEDGE_BASE_SEED } from "@/data/knowledgeBase";
+import * as db from "@/lib/db";
 import { newId, store } from "@/lib/store";
 import type { Persona } from "@/types/persona";
 import type { Profile } from "@/types/profile";
@@ -143,6 +144,46 @@ export function ensureKnowledgeBaseSeeded(): void {
   if (store.knowledgeSeeded) return;
   indexKnowledgeSources(KNOWLEDGE_BASE_SEED);
   store.knowledgeSeeded = true;
+}
+
+/**
+ * 確認 Supabase 上 counselor_faqs 已被載入 in-memory KB。
+ *
+ *   - serverless cold start 後 in-memory store 會空掉 → 諮詢師寫過的 FAQ 會「掉」。
+ *   - 這裡用 60 秒 TTL 重新撈一次。聊天高峰時通常只在第一個 request 命中 DB。
+ *   - 失敗只 log，不丟出錯誤；KB 至少還有 KNOWLEDGE_BASE_SEED 撐著。
+ */
+let lastCounselorFaqLoadAt = 0;
+const COUNSELOR_FAQ_TTL_MS = 60_000;
+
+export async function ensureCounselorFaqsLoaded(opts: {
+  force?: boolean;
+} = {}): Promise<number> {
+  const now = Date.now();
+  if (!opts.force && now - lastCounselorFaqLoadAt < COUNSELOR_FAQ_TTL_MS) {
+    return 0;
+  }
+  lastCounselorFaqLoadAt = now;
+  try {
+    ensureKnowledgeBaseSeeded();
+    const faqs = await db.listCounselorFaqs(500);
+    for (const faq of faqs) {
+      upsertKnowledgeSource(
+        buildCounselorFaqSource({
+          question: faq.question,
+          answer: faq.answer,
+          caseId: faq.id,
+          tags: faq.tags?.length
+            ? faq.tags
+            : ["諮詢師審核", "歷史案例"],
+        }),
+      );
+    }
+    return faqs.length;
+  } catch (e) {
+    console.warn("[rag] ensureCounselorFaqsLoaded failed:", e);
+    return 0;
+  }
 }
 
 export function indexKnowledgeSources(
