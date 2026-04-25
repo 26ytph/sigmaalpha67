@@ -417,27 +417,6 @@ class _HomeScreenState extends State<HomeScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Padding(
-          padding: EdgeInsets.only(left: 4, bottom: 10),
-          child: Text(
-            '快速進入',
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w800,
-              color: AppColors.textSecondary,
-            ),
-          ),
-        ),
-        GridView.count(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          crossAxisCount: 2,
-          mainAxisSpacing: 10,
-          crossAxisSpacing: 10,
-          childAspectRatio: 2.6,
-          children: [for (final e in entries) _featureTile(e)],
-        ),
-        AppGaps.h16,
         Padding(
           padding: const EdgeInsets.only(left: 4, bottom: 10),
           child: Row(

@@ -432,6 +432,24 @@ class BackendApi {
     );
   }
 
+  /// 從後端拉滑卡結果（GET /api/swipe/summary）。
+  /// 換裝置 / 清快取後，這是把使用者按過 ❤ 的職位帶回來的唯一管道。
+  /// 之後 `generatePlan(likedRoleIds, ...)` 才有得算。
+  static Future<({List<String> likedRoleIds, List<String> dislikedRoleIds})>
+  fetchSwipeSummary() async {
+    final data = await _request('GET', '/api/swipe/summary');
+    final summary = data['summary'];
+    if (summary is! Map) {
+      return (likedRoleIds: const <String>[], dislikedRoleIds: const <String>[]);
+    }
+    final liked = (summary['likedRoleIds'] as List?) ?? const [];
+    final disliked = (summary['dislikedRoleIds'] as List?) ?? const [];
+    return (
+      likedRoleIds: List<String>.from(liked),
+      dislikedRoleIds: List<String>.from(disliked),
+    );
+  }
+
   static Future<SkillTranslation> translateSkill(String raw) async {
     final data = await _request(
       'POST',
@@ -454,6 +472,17 @@ class BackendApi {
     final raw = data['updatedPersona'];
     if (raw is Map) return _personaFromJson(Map<String, dynamic>.from(raw));
     return null;
+  }
+
+  /// 列出 user 已存的所有技能翻譯（GET /api/skills/translations）。
+  static Future<List<SkillTranslation>> listSkillTranslations() async {
+    final data = await _request('GET', '/api/skills/translations');
+    final raw = data['translations'];
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((m) => _skillTranslationFromJson(Map<String, dynamic>.from(m)))
+        .toList(growable: false);
   }
 
   static Future<BackendChatReply> sendChatMessage({
