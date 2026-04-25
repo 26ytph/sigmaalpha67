@@ -1,16 +1,47 @@
 import 'package:flutter/cupertino.dart';
 
+import '../logic/generate_plan.dart' as plan;
+import '../models/models.dart';
+import '../services/app_repository.dart';
 import '../utils/theme.dart';
 
 /// 職涯路徑頁：兩個內建分頁
-///   - Tab 0：Roadmap 地圖 — 一條像旅程的曲線，串連 4 個 week 節點 + 1 個 goal。
+///   - Tab 0：Roadmap 地圖 — 一條像旅程的曲線，串連最多 4 個 week 節點 + 1 個 goal。
 ///                點擊 week 節點 → 切到 Tab 1 並滾到對應週卡片。
-///   - Tab 1：每週 Todo List — 上方顯示月份目標，中段是週卡片清單，
+///   - Tab 1：每週 Todo List — 上方顯示月份目標 + 興趣 chips，中段是週卡片清單，
 ///                每張卡片有 checkbox 樣式的待辦；底部固定一顆「查看更新」按鈕。
 ///
-/// 目前用 mock data，之後可以改接 [generatePlan] 與 [AppStorage.planTodos]。
+/// 「Roadmap 是依 Persona + 興趣推算出該補哪些技能」
+/// ────────────────────────────────────────────────
+/// 真正算出本月任務的是 [plan.generatePlan]：
+///   1. 輸入 = 使用者按 ❤ 過的職位（[ExploreResults.likedRoleIds]） + mode（求職/創業）
+///   2. 內部 → 把 likedRoles 轉成 RoleTag 排名 → 對應到該 tag 的週課表
+///      （[plan.baseWeeks]） + 推薦課程 / 證照 ([plan._coursesFor])
+///   3. 輸出 = `GeneratedPlan` 的 weeks（goals / resources / outputs）
+///
+/// 介面個人化會再用：
+///   - `profile.name` / `profile.currentStage`：問候、副標
+///   - `persona.recommendedNextStep` / `profile.goals`：本月目標 headline
+///   - `persona.mainInterests` ∪ `profile.interests`：介面上的 chip
+///
+/// 「查看更新」打的是後端的 4 條：
+///   - GET /api/users/me/profile      → profile（含 interests）
+///   - GET /api/persona               → persona（含 mainInterests / 推薦下一步）
+///   - GET /api/swipe/summary         → likedRoleIds（決定整份 plan 的核心輸入）
+///   - GET /api/skills/translations   → 技能翻譯（之後可以選擇加進週任務）
 class CareerPathScreen extends StatefulWidget {
-  const CareerPathScreen({super.key});
+  const CareerPathScreen({
+    super.key,
+    required this.storage,
+    required this.onStorageChanged,
+    this.onOpenExplore,
+  });
+
+  final AppStorage storage;
+  final ValueChanged<AppStorage> onStorageChanged;
+
+  /// 沒有任何 likedRoleIds → 空狀態 CTA 帶使用者去滑卡探索。
+  final VoidCallback? onOpenExplore;
 
   @override
   State<CareerPathScreen> createState() => _CareerPathScreenState();
@@ -18,57 +49,119 @@ class CareerPathScreen extends StatefulWidget {
 
 class _CareerPathScreenState extends State<CareerPathScreen> {
   int _tab = 0;
+  bool _refreshing = false;
   final ScrollController _todoScroll = ScrollController();
   final Map<int, GlobalKey> _weekKeys = {};
 
-  // —— Mock data ———————————————————————————————————————————
-  static const _monthLabel = '4月';
-  static const _monthGoal = '找到職涯大方向';
-  static const _monthSub = '一步一步來，不急著馬上找到答案。';
-
-  late final List<_WeekData> _weeks = const [
-    _WeekData(
-      id: 1,
-      title: 'Week 1',
-      focus: '探索職涯方向',
-      todos: ['完成個人 Profile', '瀏覽 10 張職涯卡片', '收藏 3 個感興趣方向'],
-    ),
-    _WeekData(
-      id: 2,
-      title: 'Week 2',
-      focus: '建立基礎能力',
-      todos: ['完成技能自評', '學習履歷基本架構', '瀏覽 3 個課程資源'],
-    ),
-    _WeekData(
-      id: 3,
-      title: 'Week 3',
-      focus: '準備行動素材',
-      todos: ['建立履歷初稿', '請 AI 檢查履歷', '選出 5 個想投遞的機會'],
-    ),
-    _WeekData(
-      id: 4,
-      title: 'Week 4',
-      focus: '實際行動與回饋',
-      todos: ['投遞 3 個機會', '預約一次職涯諮詢', '完成本週回饋'],
-    ),
-  ];
-
-  // 每個 todo 的勾選狀態（mock；換頁不重置，但 app 重啟會清空）。
-  // key = '<weekId>.<todoIndex>'
+  // todo 勾選狀態（local-only；app 重啟會清空）。
+  // key = '<weekNumber>:<todoIdx>'
   final Map<String, bool> _todoDone = {};
 
-  bool _isDone(int weekId, int idx) => _todoDone['$weekId.$idx'] ?? false;
+  late plan.GeneratedPlan _plan;
 
-  void _toggleTodo(int weekId, int idx) {
-    setState(() => _todoDone['$weekId.$idx'] = !_isDone(weekId, idx));
+  @override
+  void initState() {
+    super.initState();
+    _plan = _buildPlan(widget.storage);
+  }
+
+  @override
+  void didUpdateWidget(covariant CareerPathScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final old = oldWidget.storage;
+    final cur = widget.storage;
+    if (!identical(old.explore.likedRoleIds, cur.explore.likedRoleIds) ||
+        old.profile.startupInterest != cur.profile.startupInterest) {
+      setState(() => _plan = _buildPlan(cur));
+    }
+  }
+
+  static plan.GeneratedPlan _buildPlan(AppStorage s) {
+    return plan.generatePlan(s.explore.likedRoleIds, mode: s.profile.mode);
+  }
+
+  // —— 一週要顯示的 todo：goals + outputs（resources 是閱讀資源，先留下不顯）
+  List<String> _todosFor(plan.PlanWeek w) {
+    return [...w.goals, ...w.outputs].take(5).toList(growable: false);
+  }
+
+  bool _isDone(int weekNum, int idx) =>
+      _todoDone['$weekNum:$idx'] ?? false;
+
+  void _toggleTodo(int weekNum, int idx) {
+    setState(() => _todoDone['$weekNum:$idx'] = !_isDone(weekNum, idx));
+  }
+
+  double _weekCompletion(plan.PlanWeek w) {
+    final items = _todosFor(w);
+    if (items.isEmpty) return 0;
+    var done = 0;
+    for (var i = 0; i < items.length; i++) {
+      if (_isDone(w.week, i)) done++;
+    }
+    return done / items.length;
+  }
+
+  // —— 個人化文案（profile + persona） ————————————————————
+
+  String get _monthLabel {
+    const names = [
+      '1月', '2月', '3月', '4月', '5月', '6月',
+      '7月', '8月', '9月', '10月', '11月', '12月',
+    ];
+    return names[DateTime.now().month - 1];
+  }
+
+  /// 本月目標：persona 推薦的下一步 > 使用者自寫的 goals[0] > Plan headline。
+  String get _monthGoal {
+    final persona = widget.storage.persona;
+    final profile = widget.storage.profile;
+    if (persona.recommendedNextStep.isNotEmpty) {
+      return persona.recommendedNextStep;
+    }
+    if (profile.goals.isNotEmpty) return profile.goals.first;
+    return _plan.headline;
+  }
+
+  /// 副標：呼叫使用者名字 + 標出階段；空狀態給 onboarding 提示。
+  String get _monthSub {
+    final profile = widget.storage.profile;
+    if (_plan.weeks.isEmpty) {
+      return profile.name.isEmpty
+          ? '到「滑卡探索」按 ❤ 一些有興趣的職位，這條路線就會自動長出來 ✨'
+          : '${profile.name}，去滑卡 ❤ 一些有興趣的職位，這個月的任務就會跟你對齊 ✨';
+    }
+    if (profile.currentStage.isNotEmpty) {
+      return '${profile.currentStage}階段，先把這幾週的能力打底。';
+    }
+    return '一步一步來，不急著馬上找到答案。';
+  }
+
+  /// persona.mainInterests 優先，profile.interests 補位，去重後最多 5 個。
+  List<String> get _topInterests {
+    final out = <String>[];
+    final seen = <String>{};
+    for (final s in widget.storage.persona.mainInterests) {
+      final v = s.trim();
+      if (v.isEmpty || !seen.add(v)) continue;
+      out.add(v);
+      if (out.length >= 5) return out;
+    }
+    for (final s in widget.storage.profile.interests) {
+      final v = s.trim();
+      if (v.isEmpty || !seen.add(v)) continue;
+      out.add(v);
+      if (out.length >= 5) return out;
+    }
+    return out;
   }
 
   // —— Tab navigation ———————————————————————————————————————
 
-  void _jumpToWeek(int weekId) {
+  void _jumpToWeek(int weekNum) {
     setState(() => _tab = 1);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final ctx = _weekKeys[weekId]?.currentContext;
+      final ctx = _weekKeys[weekNum]?.currentContext;
       if (ctx != null) {
         Scrollable.ensureVisible(
           ctx,
@@ -80,17 +173,67 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
     });
   }
 
-  void _showCheckUpdates() {
+  // —— 「查看更新」：合併 refresh profile + persona + swipes + translations ——
+
+  Future<void> _checkUpdates() async {
+    if (_refreshing) return;
+    setState(() => _refreshing = true);
+    final result = await AppRepository.refreshAll();
+    if (!mounted) return;
+    setState(() => _refreshing = false);
+
+    widget.onStorageChanged(result.storage);
+
+    final allFailed = result.profileChanged == null &&
+        result.personaChanged == null &&
+        result.exploreChanged == null &&
+        result.translationsChanged == null;
+    if (allFailed) {
+      _showDialog(
+        title: '無法連線',
+        body: '剛剛沒拿到任何資料。已沿用本機現況。',
+      );
+      return;
+    }
+
+    final summary = _summarize(result);
+    if (summary.isEmpty) {
+      _showDialog(
+        title: '已是最新內容',
+        body: '個人資料、Persona、滑卡結果都沒有更動 🌸',
+      );
+    } else {
+      _showDialog(title: '已同步', body: summary);
+    }
+  }
+
+  String _summarize(({
+    AppStorage storage,
+    bool? profileChanged,
+    bool? personaChanged,
+    int? exploreChanged,
+    int? translationsChanged,
+  }) r) {
+    final lines = <String>[];
+    if (r.profileChanged == true) lines.add('・個人資料已更新');
+    if (r.personaChanged == true) lines.add('・Persona 已更新');
+    if ((r.exploreChanged ?? 0) > 0) {
+      lines.add('・滑卡結果有 ${r.exploreChanged} 筆變動，已重新生成路線');
+    }
+    if ((r.translationsChanged ?? 0) > 0) {
+      lines.add('・新增 / 更動 ${r.translationsChanged} 筆技能翻譯');
+    }
+    return lines.join('\n');
+  }
+
+  void _showDialog({required String title, required String body}) {
     showCupertinoDialog<void>(
       context: context,
       builder: (ctx) => CupertinoAlertDialog(
-        title: const Text('已是最新內容'),
-        content: const Padding(
-          padding: EdgeInsets.only(top: 6),
-          child: Text(
-            '目前沒有新的任務或建議，繼續完成本月目標吧 🌸',
-            style: TextStyle(height: 1.5),
-          ),
+        title: Text(title),
+        content: Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(body, style: const TextStyle(height: 1.5)),
         ),
         actions: [
           CupertinoDialogAction(
@@ -113,6 +256,8 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final weeks = _plan.weeks.take(4).toList();
+
     return CupertinoPageScaffold(
       backgroundColor: AppColors.bg,
       navigationBar: const CupertinoNavigationBar(
@@ -139,21 +284,27 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
                 child: _tab == 0
                     ? _RoadmapView(
                         key: const ValueKey('roadmap'),
-                        weeks: _weeks,
+                        weeks: weeks,
                         completionFor: _weekCompletion,
                         onTapWeek: _jumpToWeek,
+                        userName: widget.storage.profile.name,
+                        onOpenExplore: widget.onOpenExplore,
                       )
                     : _TodoListView(
                         key: const ValueKey('todos'),
                         scrollController: _todoScroll,
-                        weeks: _weeks,
+                        weeks: weeks,
                         weekKeys: _weekKeys,
+                        todosFor: _todosFor,
                         isDone: _isDone,
                         onToggle: _toggleTodo,
                         monthLabel: _monthLabel,
                         monthGoal: _monthGoal,
                         monthSub: _monthSub,
-                        onCheckUpdates: _showCheckUpdates,
+                        interests: _topInterests,
+                        refreshing: _refreshing,
+                        onCheckUpdates: _checkUpdates,
+                        onOpenExplore: widget.onOpenExplore,
                       ),
               ),
             ),
@@ -162,25 +313,14 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
       ),
     );
   }
-
-  double _weekCompletion(int weekId) {
-    final week = _weeks.firstWhere((w) => w.id == weekId);
-    if (week.todos.isEmpty) return 0;
-    var done = 0;
-    for (var i = 0; i < week.todos.length; i++) {
-      if (_isDone(week.id, i)) done++;
-    }
-    return done / week.todos.length;
-  }
 }
 
 // =============================================================================
-// 上方分頁切換器（Roadmap / 本月任務）
+// 上方分頁切換器
 // =============================================================================
 
 class _TabPills extends StatelessWidget {
   const _TabPills({required this.value, required this.onChange});
-
   final int value;
   final ValueChanged<int> onChange;
 
@@ -267,7 +407,7 @@ class _PillButton extends StatelessWidget {
 }
 
 // =============================================================================
-// Tab 0 — Roadmap 地圖
+// Tab 0 — Roadmap
 // =============================================================================
 
 class _RoadmapView extends StatelessWidget {
@@ -276,14 +416,17 @@ class _RoadmapView extends StatelessWidget {
     required this.weeks,
     required this.completionFor,
     required this.onTapWeek,
+    required this.userName,
+    required this.onOpenExplore,
   });
 
-  final List<_WeekData> weeks;
-  final double Function(int weekId) completionFor;
+  final List<plan.PlanWeek> weeks;
+  final double Function(plan.PlanWeek week) completionFor;
   final ValueChanged<int> onTapWeek;
+  final String userName;
+  final VoidCallback? onOpenExplore;
 
-  // 5 個節點（4 週 + Goal）相對位置（0–1）— 像個蛇形旅程。
-  static const _positions = <Offset>[
+  static const _slotPositions = <Offset>[
     Offset(0.20, 0.07),
     Offset(0.78, 0.27),
     Offset(0.20, 0.50),
@@ -293,6 +436,9 @@ class _RoadmapView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final visibleSlots = weeks.length + 1;
+    final positions = _slotPositions.sublist(0, visibleSlots.clamp(2, 5));
+
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
       child: Column(
@@ -333,27 +479,41 @@ class _RoadmapView extends StatelessWidget {
                           size: 16,
                         ),
                       ),
-                      Positioned.fill(
-                        child: CustomPaint(
-                          painter: _PathPainter(positions: _positions),
+                      if (positions.length >= 2)
+                        Positioned.fill(
+                          child: CustomPaint(
+                            painter: _PathPainter(positions: positions),
+                          ),
                         ),
-                      ),
-                      for (var i = 0; i < _positions.length; i++)
+                      for (var i = 0; i < positions.length; i++)
                         Positioned(
-                          left: _positions[i].dx * width - _nodeSize(i) / 2,
-                          top: _positions[i].dy * height - _nodeSize(i) / 2,
+                          left: positions[i].dx * width -
+                              _nodeSize(i, positions.length) / 2,
+                          top: positions[i].dy * height -
+                              _nodeSize(i, positions.length) / 2,
                           child: _RoadmapNode(
-                            label: i < weeks.length ? '${weeks[i].id}' : '🎯',
-                            sublabel:
-                                i < weeks.length ? weeks[i].focus : '完成本月目標',
-                            isGoal: i == _positions.length - 1,
+                            label: i < weeks.length ? '${weeks[i].week}' : '🎯',
+                            sublabel: i < weeks.length
+                                ? weeks[i].title
+                                : '完成本月目標',
+                            isGoal: i == positions.length - 1,
                             progress: i < weeks.length
-                                ? completionFor(weeks[i].id)
+                                ? completionFor(weeks[i])
                                 : null,
-                            size: _nodeSize(i),
+                            size: _nodeSize(i, positions.length),
                             onTap: i < weeks.length
-                                ? () => onTapWeek(weeks[i].id)
+                                ? () => onTapWeek(weeks[i].week)
                                 : null,
+                          ),
+                        ),
+                      if (weeks.isEmpty)
+                        Center(
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 32),
+                            child: _EmptyHint(
+                              userName: userName,
+                              onOpenExplore: onOpenExplore,
+                            ),
                           ),
                         ),
                     ],
@@ -369,9 +529,10 @@ class _RoadmapView extends StatelessWidget {
     );
   }
 
-  double _nodeSize(int i) => i == _positions.length - 1 ? 86 : 72;
+  double _nodeSize(int i, int total) => i == total - 1 ? 86 : 72;
 
   Widget _greeting() {
+    final title = userName.isEmpty ? '你的職涯小旅程' : '$userName 的職涯小旅程';
     return Container(
       padding: const EdgeInsets.fromLTRB(18, 14, 18, 16),
       decoration: BoxDecoration(
@@ -396,13 +557,13 @@ class _RoadmapView extends StatelessWidget {
             ),
           ),
           AppGaps.w12,
-          const Expanded(
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '你的職涯小旅程',
-                  style: TextStyle(
+                  title,
+                  style: const TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w700,
                     letterSpacing: 0.5,
@@ -411,8 +572,10 @@ class _RoadmapView extends StatelessWidget {
                 ),
                 AppGaps.h2,
                 Text(
-                  '點任一週的小圓，跳到那週的任務 ✨',
-                  style: TextStyle(
+                  weeks.isEmpty
+                      ? '去滑卡探索按 ❤ 喜歡的職位，這條路線就會自動長出來 ✨'
+                      : '點任一週的小圓，跳到那週的任務 ✨',
+                  style: const TextStyle(
                     fontSize: 13,
                     color: AppColors.textSecondary,
                   ),
@@ -439,6 +602,71 @@ class _RoadmapView extends StatelessWidget {
           ),
           AppGaps.w12,
           _LegendDot(color: AppColors.iosGreen, label: '完成'),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyHint extends StatelessWidget {
+  const _EmptyHint({required this.userName, this.onOpenExplore});
+  final String userName;
+  final VoidCallback? onOpenExplore;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = userName.isEmpty ? '還沒滑過卡' : '$userName，這裡還是空的';
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+      decoration: BoxDecoration(
+        color: CupertinoColors.white.withValues(alpha: 0.85),
+        borderRadius: BorderRadius.circular(AppRadii.lg),
+        boxShadow: AppColors.shadowSoft,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(
+            CupertinoIcons.heart_fill,
+            color: AppColors.brandStart,
+            size: 28,
+          ),
+          AppGaps.h8,
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w800,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          AppGaps.h4,
+          const Text(
+            '到「滑卡探索」按 ❤ 一些有興趣的職位，這個月的任務就會自己長出來。',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 12,
+              height: 1.5,
+              color: AppColors.textSecondary,
+            ),
+          ),
+          if (onOpenExplore != null) ...[
+            AppGaps.h10,
+            CupertinoButton(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              color: AppColors.brandStart,
+              borderRadius: BorderRadius.circular(AppRadii.pill),
+              onPressed: onOpenExplore,
+              child: const Text(
+                '去滑卡探索',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                  color: CupertinoColors.white,
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -600,10 +828,8 @@ class _PathPainter extends CustomPainter {
     final pts = positions
         .map((p) => Offset(p.dx * size.width, p.dy * size.height))
         .toList();
-
     final basePath = _buildPath(pts);
 
-    // 1) 半透明粉色底線（讓路徑看起來蓬鬆）
     final glowPaint = Paint()
       ..color = const Color(0x33FE3C72)
       ..style = PaintingStyle.stroke
@@ -611,7 +837,6 @@ class _PathPainter extends CustomPainter {
       ..strokeCap = StrokeCap.round;
     canvas.drawPath(basePath, glowPaint);
 
-    // 2) 主要虛線（dashed）粉線
     final dashPaint = Paint()
       ..color = AppColors.brandStart
       ..style = PaintingStyle.stroke
@@ -667,28 +892,36 @@ class _TodoListView extends StatelessWidget {
     required this.scrollController,
     required this.weeks,
     required this.weekKeys,
+    required this.todosFor,
     required this.isDone,
     required this.onToggle,
     required this.monthLabel,
     required this.monthGoal,
     required this.monthSub,
+    required this.interests,
+    required this.refreshing,
     required this.onCheckUpdates,
+    required this.onOpenExplore,
   });
 
   final ScrollController scrollController;
-  final List<_WeekData> weeks;
+  final List<plan.PlanWeek> weeks;
   final Map<int, GlobalKey> weekKeys;
-  final bool Function(int weekId, int idx) isDone;
-  final void Function(int weekId, int idx) onToggle;
+  final List<String> Function(plan.PlanWeek week) todosFor;
+  final bool Function(int weekNum, int idx) isDone;
+  final void Function(int weekNum, int idx) onToggle;
   final String monthLabel;
   final String monthGoal;
   final String monthSub;
+  final List<String> interests;
+  final bool refreshing;
   final VoidCallback onCheckUpdates;
+  final VoidCallback? onOpenExplore;
 
   @override
   Widget build(BuildContext context) {
     for (final w in weeks) {
-      weekKeys.putIfAbsent(w.id, GlobalKey.new);
+      weekKeys.putIfAbsent(w.week, GlobalKey.new);
     }
 
     return Column(
@@ -698,19 +931,28 @@ class _TodoListView extends StatelessWidget {
             controller: scrollController,
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
             children: [
-              _MonthHeader(label: monthLabel, goal: monthGoal, sub: monthSub),
+              _MonthHeader(
+                label: monthLabel,
+                goal: monthGoal,
+                sub: monthSub,
+                interests: interests,
+              ),
               AppGaps.h16,
-              for (final w in weeks) ...[
-                Container(
-                  key: weekKeys[w.id],
-                  child: _WeekCard(
-                    week: w,
-                    isDone: isDone,
-                    onToggle: onToggle,
+              if (weeks.isEmpty)
+                _emptyCard(context)
+              else
+                for (final w in weeks) ...[
+                  Container(
+                    key: weekKeys[w.week],
+                    child: _WeekCard(
+                      week: w,
+                      todos: todosFor(w),
+                      isDone: isDone,
+                      onToggle: onToggle,
+                    ),
                   ),
-                ),
-                AppGaps.h12,
-              ],
+                  AppGaps.h12,
+                ],
               AppGaps.h12,
             ],
           ),
@@ -729,32 +971,110 @@ class _TodoListView extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(vertical: 14),
                 color: AppColors.brandStart,
                 borderRadius: BorderRadius.circular(AppRadii.pill),
-                onPressed: onCheckUpdates,
-                child: const Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      CupertinoIcons.refresh_circled_solid,
-                      size: 18,
-                      color: CupertinoColors.white,
-                    ),
-                    SizedBox(width: 8),
-                    Text(
-                      '查看更新',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w800,
-                        color: CupertinoColors.white,
-                        letterSpacing: 0.5,
+                onPressed: refreshing ? null : onCheckUpdates,
+                child: refreshing
+                    ? const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          CupertinoActivityIndicator(
+                            color: CupertinoColors.white,
+                          ),
+                          SizedBox(width: 8),
+                          Text(
+                            '更新中…',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w800,
+                              color: CupertinoColors.white,
+                            ),
+                          ),
+                        ],
+                      )
+                    : const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            CupertinoIcons.refresh_circled_solid,
+                            size: 18,
+                            color: CupertinoColors.white,
+                          ),
+                          SizedBox(width: 8),
+                          Text(
+                            '查看更新',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w800,
+                              color: CupertinoColors.white,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                  ],
-                ),
               ),
             ),
           ),
         ),
       ],
+    );
+  }
+
+  Widget _emptyCard(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 22, 20, 22),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadii.xl),
+        border: Border.all(color: AppColors.separator),
+        boxShadow: AppColors.shadowSoft,
+      ),
+      child: Column(
+        children: [
+          const Icon(
+            CupertinoIcons.heart_fill,
+            color: AppColors.brandStart,
+            size: 32,
+          ),
+          AppGaps.h10,
+          const Text(
+            '本月還沒有任務',
+            style: TextStyle(
+              fontSize: 17,
+              fontWeight: FontWeight.w800,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          AppGaps.h6,
+          const Text(
+            '到「滑卡探索」按 ❤ 一些有興趣的職位，這個月的任務就會自己長出來。',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 13,
+              height: 1.55,
+              color: AppColors.textSecondary,
+            ),
+          ),
+          if (onOpenExplore != null) ...[
+            AppGaps.h12,
+            CupertinoButton(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 18,
+                vertical: 10,
+              ),
+              color: AppColors.brandStart,
+              borderRadius: BorderRadius.circular(AppRadii.pill),
+              onPressed: onOpenExplore,
+              child: const Text(
+                '去滑卡探索',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  color: CupertinoColors.white,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -764,11 +1084,13 @@ class _MonthHeader extends StatelessWidget {
     required this.label,
     required this.goal,
     required this.sub,
+    required this.interests,
   });
 
   final String label;
   final String goal;
   final String sub;
+  final List<String> interests;
 
   @override
   Widget build(BuildContext context) {
@@ -835,7 +1157,60 @@ class _MonthHeader extends StatelessWidget {
               color: AppColors.textSecondary,
             ),
           ),
+          if (interests.isNotEmpty) ...[
+            AppGaps.h12,
+            Row(
+              children: [
+                const Icon(
+                  CupertinoIcons.heart_fill,
+                  size: 11,
+                  color: AppColors.brandStart,
+                ),
+                AppGaps.w4,
+                const Text(
+                  '你的興趣',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.6,
+                    color: AppColors.brandStart,
+                  ),
+                ),
+              ],
+            ),
+            AppGaps.h6,
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [for (final i in interests) _InterestChip(label: i)],
+            ),
+          ],
         ],
+      ),
+    );
+  }
+}
+
+class _InterestChip extends StatelessWidget {
+  const _InterestChip({required this.label});
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: CupertinoColors.white.withValues(alpha: 0.85),
+        borderRadius: BorderRadius.circular(AppRadii.pill),
+        border: Border.all(color: AppColors.separator),
+      ),
+      child: Text(
+        '#$label',
+        style: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w800,
+          color: AppColors.brandStart,
+        ),
       ),
     );
   }
@@ -844,20 +1219,22 @@ class _MonthHeader extends StatelessWidget {
 class _WeekCard extends StatelessWidget {
   const _WeekCard({
     required this.week,
+    required this.todos,
     required this.isDone,
     required this.onToggle,
   });
 
-  final _WeekData week;
-  final bool Function(int weekId, int idx) isDone;
-  final void Function(int weekId, int idx) onToggle;
+  final plan.PlanWeek week;
+  final List<String> todos;
+  final bool Function(int weekNum, int idx) isDone;
+  final void Function(int weekNum, int idx) onToggle;
 
   @override
   Widget build(BuildContext context) {
     final doneCount = [
-      for (var i = 0; i < week.todos.length; i++) if (isDone(week.id, i)) 1,
+      for (var i = 0; i < todos.length; i++) if (isDone(week.week, i)) 1,
     ].length;
-    final allDone = week.todos.isNotEmpty && doneCount == week.todos.length;
+    final allDone = todos.isNotEmpty && doneCount == todos.length;
 
     return Container(
       padding: const EdgeInsets.fromLTRB(18, 16, 18, 14),
@@ -886,7 +1263,7 @@ class _WeekCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(AppRadii.pill),
                 ),
                 child: Text(
-                  week.title,
+                  'Week ${week.week}',
                   style: const TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w900,
@@ -897,7 +1274,7 @@ class _WeekCard extends StatelessWidget {
               ),
               const Spacer(),
               Text(
-                '$doneCount / ${week.todos.length}',
+                '$doneCount / ${todos.length}',
                 style: const TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w700,
@@ -916,7 +1293,7 @@ class _WeekCard extends StatelessWidget {
           ),
           AppGaps.h8,
           Text(
-            week.focus,
+            week.title,
             style: const TextStyle(
               fontSize: 17,
               fontWeight: FontWeight.w800,
@@ -925,11 +1302,11 @@ class _WeekCard extends StatelessWidget {
             ),
           ),
           AppGaps.h10,
-          for (var i = 0; i < week.todos.length; i++)
+          for (var i = 0; i < todos.length; i++)
             _TodoRow(
-              text: week.todos[i],
-              done: isDone(week.id, i),
-              onTap: () => onToggle(week.id, i),
+              text: todos[i],
+              done: isDone(week.week, i),
+              onTap: () => onToggle(week.week, i),
             ),
         ],
       ),
@@ -996,22 +1373,4 @@ class _TodoRow extends StatelessWidget {
       ),
     );
   }
-}
-
-// =============================================================================
-// Mock data model
-// =============================================================================
-
-class _WeekData {
-  const _WeekData({
-    required this.id,
-    required this.title,
-    required this.focus,
-    required this.todos,
-  });
-
-  final int id;
-  final String title;
-  final String focus;
-  final List<String> todos;
 }

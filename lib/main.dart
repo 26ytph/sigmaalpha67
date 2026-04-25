@@ -153,7 +153,11 @@ class _AppShellState extends State<AppShell> {
                   onOpenSkillTranslator: _openSkillTranslatorRoute,
                 ),
                 // 3 — 職涯路徑
-                const CareerPathScreen(),
+                CareerPathScreen(
+                  storage: storage,
+                  onStorageChanged: _setStorage,
+                  onOpenExplore: () => _goTo(1),
+                ),
                 // 4 — AI 小助理
                 ChatScreen(storage: storage),
               ],

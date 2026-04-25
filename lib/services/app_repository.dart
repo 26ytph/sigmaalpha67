@@ -163,6 +163,147 @@ class AppRepository {
     }
   }
 
+  /// 一次重新整理職涯路徑頁需要的三份資料：profile / persona / 技能翻譯。
+  ///
+  /// 任何一段網路失敗都不影響其他段；對應的 `*Changed` 欄位回 `null`
+  /// 代表那段沒拿到資料（例如離線、token 過期）。回傳的 [storage]
+  /// 一定可用，最差就是維持本機現況。
+  static Future<({
+    AppStorage storage,
+    bool? profileChanged,
+    bool? personaChanged,
+    int? exploreChanged,
+    int? translationsChanged,
+  })> refreshAll() async {
+    final pre = await load();
+    bool? profileChanged;
+    bool? personaChanged;
+    int? exploreChanged;
+    int? translationsChanged;
+
+    // 1) Profile
+    try {
+      final remote = await BackendApi.fetchProfile();
+      if (remote != null && !remote.isEmpty) {
+        profileChanged = !_profileEquals(pre.profile, remote);
+        await save((await load()).copyWith(profile: remote));
+      } else {
+        profileChanged = false;
+      }
+    } catch (_) {
+      profileChanged = null;
+    }
+
+    // 2) Persona
+    try {
+      final remote = await BackendApi.fetchPersona();
+      if (remote != null && !remote.isEmpty) {
+        final cur = await load();
+        personaChanged = !_personaEquals(cur.persona, remote);
+        await save(cur.copyWith(persona: remote));
+      } else {
+        personaChanged = false;
+      }
+    } catch (_) {
+      personaChanged = null;
+    }
+
+    // 3) Swipe summary — likedRoleIds is the strongest signal for the
+    //    roadmap because generatePlan() takes it as input.
+    try {
+      final remote = await BackendApi.fetchSwipeSummary();
+      final cur = await load();
+      final prevLiked = cur.explore.likedRoleIds;
+      final delta = _stringListDelta(prevLiked, remote.likedRoleIds);
+      exploreChanged = delta;
+      await save(
+        cur.copyWith(
+          explore: cur.explore.copyWith(
+            likedRoleIds: remote.likedRoleIds,
+            dislikedRoleIds: remote.dislikedRoleIds,
+          ),
+        ),
+      );
+    } catch (_) {
+      exploreChanged = null;
+    }
+
+    // 4) Skill translations
+    try {
+      final remote = await BackendApi.listSkillTranslations();
+      final cur = await load();
+      final prevById = {for (final t in cur.skillTranslations) t.id: t};
+      var changed = 0;
+      for (final t in remote) {
+        final old = prevById[t.id];
+        if (old == null || !_translationEquals(old, t)) changed++;
+      }
+      translationsChanged = changed;
+      await save(cur.copyWith(skillTranslations: remote));
+    } catch (_) {
+      translationsChanged = null;
+    }
+
+    final storage = await load();
+    return (
+      storage: storage,
+      profileChanged: profileChanged,
+      personaChanged: personaChanged,
+      exploreChanged: exploreChanged,
+      translationsChanged: translationsChanged,
+    );
+  }
+
+  /// 對稱差（不在意順序）— 回傳 a∆b 的元素數。
+  static int _stringListDelta(List<String> a, List<String> b) {
+    final sa = a.toSet();
+    final sb = b.toSet();
+    var n = 0;
+    for (final x in sa) {
+      if (!sb.contains(x)) n++;
+    }
+    for (final x in sb) {
+      if (!sa.contains(x)) n++;
+    }
+    return n;
+  }
+
+  static bool _profileEquals(UserProfile a, UserProfile b) {
+    if (a.name != b.name) return false;
+    if (a.currentStage != b.currentStage) return false;
+    if (a.startupInterest != b.startupInterest) return false;
+    if (!_listEq(a.goals, b.goals)) return false;
+    if (!_listEq(a.interests, b.interests)) return false;
+    return true;
+  }
+
+  static bool _personaEquals(Persona a, Persona b) {
+    if (a.text != b.text) return false;
+    if (a.recommendedNextStep != b.recommendedNextStep) return false;
+    if (!_listEq(a.mainInterests, b.mainInterests)) return false;
+    if (!_listEq(a.strengths, b.strengths)) return false;
+    return true;
+  }
+
+  static bool _translationEquals(SkillTranslation a, SkillTranslation b) {
+    if (a.id != b.id) return false;
+    if (a.rawExperience != b.rawExperience) return false;
+    if (a.groups.length != b.groups.length) return false;
+    for (var i = 0; i < a.groups.length; i++) {
+      if (a.groups[i].experience != b.groups[i].experience) return false;
+      if (!_listEq(a.groups[i].skills, b.groups[i].skills)) return false;
+    }
+    return true;
+  }
+
+  static bool _listEq(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
   static Future<AppStorage> saveSkillTranslation(
     SkillTranslation translation,
   ) async {
