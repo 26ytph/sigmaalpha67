@@ -4,14 +4,19 @@ import { withAuth, readJson } from "@/lib/route";
 import { apiError } from "@/lib/errors";
 import { store } from "@/lib/store";
 import * as db from "@/lib/db";
+import { generateChatReply } from "@/engines/chatReply";
+import {
+  generateGeneralChatReply,
+  lastGeminiChatError,
+} from "@/engines/geminiChat";
 import {
   answerRagQuery,
   ensureCounselorFaqsLoaded,
   searchKnowledge,
+  shouldUseRag,
 } from "@/engines/rag";
 import { generateUserInsight } from "@/engines/userInsight";
 import { processUserQuestion } from "@/engines/normalizeQuestion";
-import { clusterQuestionIntoTopic } from "@/engines/topicCluster";
 import {
   buildChatCacheKey,
   checkRate,
@@ -101,22 +106,19 @@ export const POST = withAuth(async (req, { auth }) => {
   // 這一步要在 shouldUseRag / searchKnowledge 之前 — 否則 cold start 後寫過的 FAQ 撈不到。
   await ensureCounselorFaqsLoaded();
 
-  // —— 嚴格 RAG 守門 ——
-  //   AI 不再亂答；只有 KB（含諮詢師寫過的 FAQ）有覆蓋這題時才走 RAG 生成回覆。
-  //   沒覆蓋 → 直接回固定的「轉交諮詢師」訊息 + 自動開 case / 開主題卡，
-  //   AI 不會用一般 chat 模型自由回答超出 KB 的問題。
-  const KB_HIT_THRESHOLD = 0.35;
-  let topKBScore = 0;
-  if (body.context?.useRag !== false) {
+  // RAG 觸發判斷：除了 keyword 名單之外，也用一次便宜的 KB 預檢；
+  // 若這個問題真的有諮詢師寫過的 FAQ 高度命中，就強制走 RAG path 把答案拉出來。
+  let ragEnabled = body.context?.useRag !== false && shouldUseRag(body.message, mode);
+  if (!ragEnabled && body.context?.useRag !== false) {
     try {
       const peek = searchKnowledge({ query: body.message, topK: 1 });
-      topKBScore = peek[0]?.score ?? 0;
+      if (peek.length > 0 && peek[0].score >= 0.4) {
+        ragEnabled = true;
+      }
     } catch {
-      /* KB 還沒 seed 之類；視為沒命中 */
+      /* KB 還沒 seed 之類；忽略 */
     }
   }
-  const kbCovered =
-    body.context?.useRag !== false && topKBScore >= KB_HIT_THRESHOLD;
 
   const personaHash = persona
     ? `${persona.careerStage}:${(persona.mainInterests ?? []).slice(0, 3).join(",")}`
@@ -128,7 +130,7 @@ export const POST = withAuth(async (req, { auth }) => {
     userId: auth.userId,
     message: body.message,
     mode,
-    useRag: kbCovered,
+    useRag: ragEnabled,
     personaHash,
     historyHash,
   });
@@ -137,6 +139,7 @@ export const POST = withAuth(async (req, { auth }) => {
     shouldHandoff: boolean;
     tokensUsed: number;
     rag: unknown;
+    chatProvider: "gemini" | "local" | null;
   };
   const cached = getCachedReply<CachedPayload>(cacheKey);
   if (cached) {
@@ -172,7 +175,9 @@ export const POST = withAuth(async (req, { auth }) => {
       shouldHandoff: cached.shouldHandoff,
       tokensUsed: 0,
       rag: cached.rag,
+      chatProvider: cached.chatProvider,
       cached: true,
+      debugChatError: null,
     });
   }
 
@@ -180,8 +185,7 @@ export const POST = withAuth(async (req, { auth }) => {
     .slice(0, -1)
     .map((m) => ({ role: m.role as "user" | "assistant", text: m.text }));
 
-  // —— 嚴格守門：只有 KB 覆蓋這題時才讓 AI 用 RAG path 生成 ——
-  const ragResult = kbCovered
+  const ragResult = ragEnabled
     ? await answerRagQuery({
         userId: auth.userId,
         question: body.message,
@@ -192,31 +196,43 @@ export const POST = withAuth(async (req, { auth }) => {
       })
     : null;
 
-  // RAG 結果再用 confidence 把關一次：retrievedChunks 太弱也算 miss。
+  const geminiChat = ragResult
+    ? null
+    : await generateGeneralChatReply({
+        message: body.message,
+        profile,
+        persona,
+        mode,
+        history,
+      });
+
+  const fallback = ragResult || geminiChat
+    ? null
+    : generateChatReply({
+        message: body.message,
+        profile,
+        persona,
+        mode,
+      });
+  const baseReply =
+    ragResult?.answer ?? geminiChat?.reply ?? fallback?.reply ?? "";
+  const shouldHandoff = ragResult?.shouldHandoff ?? fallback?.shouldHandoff ?? false;
+
+  // —— RAG 沒命中（或信心很低 / 直接被判 handoff）→ 補上「已通知諮詢師」提示
+  //    並背景開一張 case，讓諮詢師收件匣看得到。 ——
   const ragConfidence = ragResult?.confidenceScore ?? 0;
-  const ragUsable =
-    ragResult !== null &&
-    ragResult.retrievedChunks.length > 0 &&
-    ragConfidence >= 0.24 &&
-    ragResult.shouldHandoff !== true;
-
-  let reply: string;
-  let shouldHandoff: boolean;
-
-  if (ragUsable && ragResult) {
-    reply = ragResult.answer;
-    shouldHandoff = false;
-  } else {
-    // KB 沒覆蓋 / 命中太弱 / RAG 自己判定要 handoff → 不嘗試自由回答，
-    // 一律送出制式「轉交諮詢師」訊息 + 背景開 case。topic 由 normalize pipeline 自動聚類。
+  const ragMissed =
+    !ragResult ||
+    ragResult.retrievedChunks.length === 0 ||
+    ragConfidence < 0.24;
+  const needsHandoff = shouldHandoff || ragMissed;
+  let reply = baseReply;
+  if (needsHandoff) {
     const followUp = pickFollowUp(body.message);
     reply =
-      `這個問題我目前的資料庫沒有覆蓋到，我不適合直接回答 — ` +
-      `已通知諮詢師，你可以等他們接手回覆 🙇\n\n` +
-      (followUp
-        ? `如果方便，可以先補一些細節讓我先幫你整理：${followUp}`
-        : "");
-    shouldHandoff = true;
+      `${baseReply}\n\n` +
+      `📌 這題我目前沒辦法精確回答 — 已通知諮詢師，你可以等他們接手回覆。\n` +
+      (followUp ? `如果方便，可以先補一些細節讓我先幫你整理：${followUp}` : "");
     autoCreateCounselorCaseInBackground({
       userId: auth.userId,
       conversationId: convId,
@@ -225,13 +241,16 @@ export const POST = withAuth(async (req, { auth }) => {
     });
   }
 
-  const needsHandoff = shouldHandoff;
   const tokensUsed = ragResult
-    ? Math.min(
-        1800,
-        180 + body.message.length * 2 + ragResult.answer.length * 2,
-      )
-    : 0;
+    ? Math.min(1800, 180 + body.message.length * 2 + ragResult.answer.length * 2)
+    : geminiChat
+      ? Math.min(800, 60 + body.message.length * 2 + geminiChat.reply.length * 2)
+      : fallback?.tokensUsed ?? 0;
+  const chatProvider: "gemini" | "local" | null = ragResult
+    ? null
+    : geminiChat
+      ? "gemini"
+      : "local";
   const replyMsg: ChatMessage = {
     id: randomUUID(),
     role: "assistant",
@@ -281,14 +300,13 @@ export const POST = withAuth(async (req, { auth }) => {
       }
     : null;
 
-  // 只把「真正用到 KB 的成功 RAG 回答」放進 cache —— handoff 訊息不快取，
-  // 避免後來 KB 補了 FAQ 卻還在送舊的「沒辦法回答」字串。
-  if (reply && ragUsable) {
+  if (reply && (ragResult || geminiChat)) {
     setCachedReply<CachedPayload>(cacheKey, {
       reply,
       shouldHandoff,
       tokensUsed,
       rag: ragPayload,
+      chatProvider,
     });
   }
 
@@ -299,9 +317,10 @@ export const POST = withAuth(async (req, { auth }) => {
     shouldHandoff,
     tokensUsed,
     rag: ragPayload,
+    chatProvider,
     cached: false,
-    kbHit: kbCovered,
-    kbScore: topKBScore,
+    debugChatError:
+      chatProvider === "local" && !ragResult ? lastGeminiChatError.value : null,
   });
 });
 
@@ -426,7 +445,7 @@ function refreshNormalizedQuestionInBackground(opts: {
         history: opts.history,
       });
       if (!outcome.stored) return;
-      const stored = await db.insertNormalizedQuestion(
+      await db.insertNormalizedQuestion(
         opts.userId,
         opts.conversationId,
         opts.messageId,
@@ -434,18 +453,6 @@ function refreshNormalizedQuestionInBackground(opts: {
       );
       if (outcome.draft.tags?.length) {
         await db.appendUserTags(opts.userId, outcome.draft.tags);
-      }
-      // 只有 AI 沒能直接解決的問題才要聚成 Topic 給諮詢師看；
-      // resolved=true 的題目根本不會出現在諮詢師畫面，無須開 topic。
-      if (stored && !outcome.draft.resolved) {
-        await clusterQuestionIntoTopic({
-          userId: opts.userId,
-          normalizedQuestionId: stored.id,
-          rawQuestion: outcome.draft.rawQuestion,
-          normalizedText: outcome.draft.normalizedText,
-        }).catch((err) => {
-          console.warn("[topicCluster] failed:", err);
-        });
       }
     } catch (err) {
       console.warn("[normalizeQuestion] background pipeline failed:", err);
