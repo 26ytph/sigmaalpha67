@@ -10,7 +10,6 @@ import '../utils/hash_util.dart';
 import '../utils/plan_todo_keys.dart';
 import '../widgets/daily_question_card.dart';
 import '../widgets/strike_badge.dart';
-import 'plan_todos_screen.dart';
 
 bool _intersect<T>(List<T> a, List<T> b) {
   final set = a.toSet();
@@ -62,8 +61,9 @@ class _PlanScreenState extends State<PlanScreen> {
               .toList()
         : dailyQuestions;
 
-    if (pool.isEmpty)
+    if (pool.isEmpty) {
       return dailyQuestions.isNotEmpty ? dailyQuestions.first : null;
+    }
     final idx = hashStringToInt(today) % pool.length;
     return pool[idx];
   }
@@ -158,7 +158,7 @@ class _PlanScreenState extends State<PlanScreen> {
     final overall = _todoProgress(plan);
 
     return CupertinoPageScaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
+      backgroundColor: const Color(0xFFFFF5F8),
       child: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),

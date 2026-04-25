@@ -1,126 +1,635 @@
 import 'package:flutter/cupertino.dart';
 
+import '../data/roles.dart';
+import '../models/models.dart';
+import '../utils/theme.dart';
+import '../widgets/strike_badge.dart';
+
 class HomeScreen extends StatelessWidget {
   const HomeScreen({
     super.key,
+    required this.storage,
     required this.onStartExplore,
     required this.onOpenPlan,
+    required this.onOpenPersona,
+    required this.onOpenSkillTranslator,
+    required this.onOpenChat,
   });
 
+  final AppStorage storage;
   final VoidCallback onStartExplore;
   final VoidCallback onOpenPlan;
+  final VoidCallback onOpenPersona;
+  final VoidCallback onOpenSkillTranslator;
+  final VoidCallback onOpenChat;
+
+  bool get _isStartup => storage.profile.startupInterest;
 
   @override
   Widget build(BuildContext context) {
+    final p = storage.profile;
+    final persona = storage.persona;
+    final liked = storage.explore.likedRoleIds;
+    final swiped = liked.length + storage.explore.dislikedRoleIds.length;
+
     return CupertinoPageScaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
+      backgroundColor: AppColors.bg,
       child: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 520),
-              child: Container(
-                padding: const EdgeInsets.all(26),
-                decoration: BoxDecoration(
-                  color: CupertinoColors.white.withValues(alpha: 0.88),
-                  borderRadius: BorderRadius.circular(26),
-                  border: Border.all(color: const Color(0x1A000000)),
-                  boxShadow: const [
-                    BoxShadow(
-                      blurRadius: 50,
-                      offset: Offset(0, 18),
-                      color: Color(0x1F020617),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Container(
-                          width: 40,
-                          height: 40,
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(16),
-                            gradient: const LinearGradient(
-                              colors: [Color(0x5938BDF8), Color(0x40F472B6)],
-                            ),
-                            border: Border.all(color: Color(0x1A000000)),
-                          ),
-                          child: const Text(
-                            'e',
-                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        const Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('職涯探索', style: TextStyle(fontSize: 13, color: Color(0xFF52525B))),
-                            Text(
-                              'EmploYA!',
-                              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600, letterSpacing: -0.4),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 22),
-                    const Text(
-                      '用滑卡探索你的興趣，\n生成一份可執行的職涯計畫',
-                      style: TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.w600,
-                        height: 1.15,
-                        letterSpacing: -0.5,
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    const Text(
-                      '先像交友軟體一樣左右滑，選出你感興趣的職位；接著根據結果，用假 AI '
-                      '生成一份 4–8 週的行動清單，並每天回答一題職涯小問題累積 streak。',
-                      style: TextStyle(
-                        fontSize: 16,
-                        height: 1.55,
-                        color: Color(0xFF3F3F46),
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        CupertinoButton.filled(
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          onPressed: onStartExplore,
-                          child: const Text('開始興趣探索'),
-                        ),
-                        const SizedBox(height: 10),
-                        CupertinoButton(
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          color: CupertinoColors.white,
-                          onPressed: onOpenPlan,
-                          child: const Text(
-                            '直接看職涯計畫',
-                            style: TextStyle(color: Color(0xFF18181B), fontWeight: FontWeight.w600),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 14),
-                    const Text(
-                      '無登入・資料只存在本機',
-                      style: TextStyle(fontSize: 13, color: Color(0xFF52525B)),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 28),
+          children: [
+            _topBar(p),
+            AppGaps.h16,
+            _heroCard(persona, liked, swiped),
+            AppGaps.h14,
+            _statsRow(swiped, liked.length),
+            AppGaps.h14,
+            _featureGrid(),
+            AppGaps.h14,
+            if (_isStartup)
+              _startupBanner()
+            else if (liked.isNotEmpty)
+              _likedRolesPreview(liked),
+          ],
         ),
       ),
     );
   }
+
+  Widget _topBar(UserProfile profile) {
+    final letter = profile.name.isNotEmpty ? profile.name.characters.first : 'E';
+    final greet = profile.name.isNotEmpty ? '哈囉，${profile.name}' : '哈囉';
+    return Row(
+      children: [
+        Container(
+          width: 46,
+          height: 46,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            gradient: _isStartup ? AppColors.startupGradient : AppColors.brandGradient,
+            shape: BoxShape.circle,
+            boxShadow: AppColors.shadowSoft,
+          ),
+          child: Text(
+            letter,
+            style: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+              color: CupertinoColors.white,
+            ),
+          ),
+        ),
+        AppGaps.w12,
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Text(
+                    'EmploYA!',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1.0,
+                      color: AppColors.brandStart,
+                    ),
+                  ),
+                  AppGaps.w8,
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                    decoration: BoxDecoration(
+                      gradient: _isStartup
+                          ? AppColors.startupGradient
+                          : AppColors.brandGradient,
+                      borderRadius: BorderRadius.circular(AppRadii.pill),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _isStartup
+                              ? CupertinoIcons.flame_fill
+                              : CupertinoIcons.briefcase_fill,
+                          size: 9,
+                          color: CupertinoColors.white,
+                        ),
+                        AppGaps.w4,
+                        Text(
+                          _isStartup ? '創業版' : '求職版',
+                          style: const TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 0.4,
+                            color: CupertinoColors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              Text(
+                greet,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ],
+          ),
+        ),
+        StrikeBadge(strike: storage.strike.current),
+      ],
+    );
+  }
+
+  Widget _heroCard(Persona persona, List<RoleId> liked, int swiped) {
+    final hasPersona = !persona.isEmpty;
+    final headline = _isStartup ? '你的創業 Persona' : '你的職涯 Persona';
+    final emptyText = _isStartup
+        ? '還沒生成創業 Persona — 完成資料後 AI 會根據你的想法、資源與階段，給你一段可隨時更新的創業者輪廓。'
+        : '還沒有屬於你的人物輪廓 — 完成基本資料後，AI 會為你生成一段可隨時更新的 Persona 描述。';
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 22, 20, 20),
+      decoration: BoxDecoration(
+        gradient: _isStartup
+            ? const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFFFFE7CC), Color(0xFFFFD4DD), Color(0xFFFFE4EC)],
+              )
+            : AppColors.heroGradient,
+        borderRadius: BorderRadius.circular(AppRadii.xxl),
+        boxShadow: AppColors.shadow,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(AppRadii.pill),
+                  boxShadow: AppColors.shadowSoft,
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      _isStartup
+                          ? CupertinoIcons.flame_fill
+                          : CupertinoIcons.sparkles,
+                      size: 12,
+                      color: _isStartup
+                          ? const Color(0xFFFE8A4F)
+                          : AppColors.brandStart,
+                    ),
+                    AppGaps.w6,
+                    Text(
+                      headline,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: _isStartup
+                            ? const Color(0xFFFE8A4F)
+                            : AppColors.brandStart,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          AppGaps.h12,
+          if (hasPersona)
+            Text(
+              persona.text,
+              maxLines: 5,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 15,
+                height: 1.7,
+                color: AppColors.textPrimary,
+              ),
+            )
+          else
+            Text(
+              emptyText,
+              style: const TextStyle(
+                fontSize: 14,
+                height: 1.65,
+                color: AppColors.textPrimary,
+              ),
+            ),
+          AppGaps.h14,
+          Row(
+            children: [
+              Expanded(
+                child: CupertinoButton(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  color: _isStartup
+                      ? const Color(0xFFFE8A4F)
+                      : AppColors.brandStart,
+                  borderRadius: BorderRadius.circular(AppRadii.md),
+                  onPressed: onOpenPersona,
+                  child: Text(
+                    hasPersona ? '查看 Persona' : '建立 Persona',
+                    style: const TextStyle(
+                      color: CupertinoColors.white,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+              ),
+              AppGaps.w8,
+              Expanded(
+                child: CupertinoButton(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(AppRadii.md),
+                  onPressed: onStartExplore,
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(CupertinoIcons.heart_fill,
+                          size: 14, color: AppColors.brandStart),
+                      AppGaps.w6,
+                      Text(
+                        '滑卡探索',
+                        style: TextStyle(
+                          color: AppColors.textPrimary,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statsRow(int swiped, int liked) {
+    return Row(
+      children: [
+        Expanded(
+          child: _statTile(
+            label: '已滑卡',
+            value: '$swiped',
+            unit: '張',
+            icon: CupertinoIcons.rectangle_on_rectangle,
+            accent: AppColors.accentIndigo,
+          ),
+        ),
+        AppGaps.w8,
+        Expanded(
+          child: _statTile(
+            label: '右滑喜歡',
+            value: '$liked',
+            unit: '個',
+            icon: CupertinoIcons.heart_fill,
+            accent: AppColors.brandStart,
+          ),
+        ),
+        AppGaps.w8,
+        Expanded(
+          child: _statTile(
+            label: '連續答題',
+            value: '${storage.strike.current}',
+            unit: '天',
+            icon: CupertinoIcons.flame_fill,
+            accent: AppColors.accentAmber,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _statTile({
+    required String label,
+    required String value,
+    required String unit,
+    required IconData icon,
+    required Color accent,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadii.md),
+        boxShadow: AppColors.shadowSoft,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 30,
+            height: 30,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: accent.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(AppRadii.sm),
+            ),
+            child: Icon(icon, size: 16, color: accent),
+          ),
+          AppGaps.h8,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Text(
+                value,
+                style: const TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.4,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const SizedBox(width: 2),
+              Text(
+                unit,
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppColors.textTertiary,
+                ),
+              ),
+            ],
+          ),
+          AppGaps.h4,
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textTertiary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _featureGrid() {
+    final entries = _isStartup
+        ? [
+            _FeatureEntry(
+              icon: CupertinoIcons.flame_fill,
+              title: '創業 To-do',
+              subtitle: '驗證、資源、申請補助',
+              onTap: onOpenPlan,
+            ),
+            _FeatureEntry(
+              icon: CupertinoIcons.chat_bubble_2_fill,
+              title: '創業 AI 諮詢',
+              subtitle: '帶有導師交接單的對話',
+              onTap: onOpenChat,
+            ),
+            _FeatureEntry(
+              icon: CupertinoIcons.text_badge_plus,
+              title: '技能翻譯',
+              subtitle: '把經驗變履歷句子',
+              onTap: onOpenSkillTranslator,
+            ),
+            _FeatureEntry(
+              icon: CupertinoIcons.person_crop_circle_fill,
+              title: '創業 Persona',
+              subtitle: '可編輯的創業者輪廓',
+              onTap: onOpenPersona,
+            ),
+          ]
+        : [
+            _FeatureEntry(
+              icon: CupertinoIcons.text_badge_plus,
+              title: '技能翻譯',
+              subtitle: '把生活經驗變履歷',
+              onTap: onOpenSkillTranslator,
+            ),
+            _FeatureEntry(
+              icon: CupertinoIcons.doc_text_fill,
+              title: '行動計畫',
+              subtitle: '4–8 週路線圖',
+              onTap: onOpenPlan,
+            ),
+            _FeatureEntry(
+              icon: CupertinoIcons.chat_bubble_2_fill,
+              title: 'AI 諮詢',
+              subtitle: '帶有交接單的對話',
+              onTap: onOpenChat,
+            ),
+            _FeatureEntry(
+              icon: CupertinoIcons.person_crop_circle_fill,
+              title: 'Persona',
+              subtitle: '你的可編輯輪廓',
+              onTap: onOpenPersona,
+            ),
+          ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(left: 4, bottom: 10),
+          child: Text(
+            '快速進入',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              color: AppColors.textSecondary,
+            ),
+          ),
+        ),
+        Row(
+          children: [
+            Expanded(child: _featureTile(entries[0])),
+            AppGaps.w8,
+            Expanded(child: _featureTile(entries[1])),
+          ],
+        ),
+        AppGaps.h8,
+        Row(
+          children: [
+            Expanded(child: _featureTile(entries[2])),
+            AppGaps.w8,
+            Expanded(child: _featureTile(entries[3])),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _featureTile(_FeatureEntry e) {
+    return CupertinoButton(
+      padding: EdgeInsets.zero,
+      onPressed: e.onTap,
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(AppRadii.lg),
+          boxShadow: AppColors.shadowSoft,
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                gradient: _isStartup
+                    ? AppColors.startupGradient
+                    : AppColors.brandGradient,
+                borderRadius: BorderRadius.circular(AppRadii.md),
+              ),
+              child: Icon(e.icon, size: 18, color: CupertinoColors.white),
+            ),
+            AppGaps.w10,
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    e.title,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  AppGaps.h4,
+                  Text(
+                    e.subtitle,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppColors.textTertiary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(CupertinoIcons.chevron_right,
+                size: 14, color: AppColors.textTertiary),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _likedRolesPreview(List<RoleId> liked) {
+    final likedRoles = roles.where((r) => liked.contains(r.id)).take(3).toList();
+    if (likedRoles.isEmpty) return const SizedBox.shrink();
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadii.lg),
+        boxShadow: AppColors.shadowSoft,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '你最近喜歡的職位',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              color: AppColors.textSecondary,
+            ),
+          ),
+          AppGaps.h10,
+          for (final r in likedRoles)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                children: [
+                  const Icon(CupertinoIcons.heart_fill,
+                      size: 14, color: AppColors.brandStart),
+                  AppGaps.w8,
+                  Expanded(
+                    child: Text(
+                      r.title,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    r.tags.isEmpty ? '' : '#${r.tags.first.label}',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textTertiary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _startupBanner() {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        gradient: AppColors.startupGradient,
+        borderRadius: BorderRadius.circular(AppRadii.lg),
+        boxShadow: AppColors.shadow,
+      ),
+      child: const Row(
+        children: [
+          Icon(CupertinoIcons.flame_fill, color: CupertinoColors.white, size: 22),
+          AppGaps.w12,
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '創業版本已啟用',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    color: CupertinoColors.white,
+                  ),
+                ),
+                AppGaps.h4,
+                Text(
+                  '計畫頁主推「創業 To-do」、AI 諮詢使用創業導師模型。可在「我」切換回求職版。',
+                  style: TextStyle(
+                    fontSize: 12,
+                    height: 1.5,
+                    color: CupertinoColors.white,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FeatureEntry {
+  const _FeatureEntry({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
 }
