@@ -389,6 +389,36 @@ export async function findConversationIdByMessageId(
   return (data?.conversation_id as string | null) ?? null;
 }
 
+/**
+ * 找該 user「最近一次有訊息流動」的 conversation_id。
+ *
+ * 為什麼不直接拿 chat_conversations.created_at 最新一筆？
+ *   使用者切換創業／求職模式時可能會建一筆全新但空的 conversation，
+ *   那筆會比真正在聊的對話更新，諮詢師端拿到就會是空的。
+ *   所以這裡用 chat_messages 最新一筆所屬的 conversation_id，
+ *   才是「使用者實際在聊」的那段。
+ *
+ * 沒有任何 chat_messages → 回 null（呼叫端會 fallback 到 listConversations）。
+ */
+export async function findMostActiveConversationId(
+  userId: string,
+): Promise<string | null> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("chat_messages")
+    .select("conversation_id")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.warn("[db] findMostActiveConversationId failed:", error.message);
+    return null;
+  }
+  return (data?.conversation_id as string | null) ?? null;
+}
+
 /** List the user's conversations, newest first. */
 export async function listConversations(
   userId: string,
