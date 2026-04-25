@@ -26,9 +26,10 @@ class _SwipeCardState extends State<SwipeCard> {
 
   double get _rotateDeg => (_delta.dx.clamp(-220.0, 220.0) / 220.0) * 10.0;
 
-  double get _likeOpacity => (_delta.dx / 140).clamp(0.0, 1.0);
+  // 反過來：往左拖 = 有興趣（like），往右拖 = 沒興趣（nope）
+  double get _likeOpacity => (-_delta.dx / 140).clamp(0.0, 1.0);
 
-  double get _nopeOpacity => (-_delta.dx / 140).clamp(0.0, 1.0);
+  double get _nopeOpacity => (_delta.dx / 140).clamp(0.0, 1.0);
 
   void _commit(SwipeDirection dir) {
     if (widget.disabled) return;
@@ -51,50 +52,53 @@ class _SwipeCardState extends State<SwipeCard> {
     return Stack(
       clipBehavior: Clip.none,
       children: [
+        // 有興趣 — 卡片左上角，往左拖時浮現
         Positioned(
           left: 24,
           top: 24,
           child: IgnorePointer(
-            child: Row(
-              children: [
-                Opacity(
-                  opacity: _likeOpacity,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFE8F8EE),
-                      border: Border.all(color: const Color(0xFF86EFAC)),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: const Text(
-                      '有興趣',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w600,
-                        color: Color(0xFF166534),
-                      ),
-                    ),
+            child: Opacity(
+              opacity: _likeOpacity,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE8F8EE),
+                  border: Border.all(color: const Color(0xFF86EFAC)),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: const Text(
+                  '有興趣',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF166534),
                   ),
                 ),
-                const SizedBox(width: 10),
-                Opacity(
-                  opacity: _nopeOpacity,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFF1F2),
-                      border: Border.all(color: const Color(0xFFFCA5A5)),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: const Text(
-                      '沒興趣',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w600,
-                        color: Color(0xFF9F1239),
-                      ),
-                    ),
+              ),
+            ),
+          ),
+        ),
+        // 沒興趣 — 卡片右上角，往右拖時浮現
+        Positioned(
+          right: 24,
+          top: 24,
+          child: IgnorePointer(
+            child: Opacity(
+              opacity: _nopeOpacity,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF1F2),
+                  border: Border.all(color: const Color(0xFFFCA5A5)),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: const Text(
+                  '沒興趣',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF9F1239),
                   ),
                 ),
-              ],
+              ),
             ),
           ),
         ),
