@@ -309,6 +309,10 @@ class _ChatScreenState extends State<ChatScreen> {
     return CupertinoPageScaffold(
       backgroundColor: AppColors.bg,
       navigationBar: CupertinoNavigationBar(
+        // Always-mounted tab inside AppShell's IndexedStack. Opt out of
+        // route hero so it doesn't collide with sibling tab nav bars
+        // when another route is pushed/popped over AppShell.
+        transitionBetweenRoutes: false,
         backgroundColor: AppColors.surface.withValues(alpha: 0.92),
         border: const Border(bottom: BorderSide(color: AppColors.border)),
         middle: const Text(
