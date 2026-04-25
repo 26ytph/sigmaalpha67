@@ -2,11 +2,14 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/cupertino.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../logic/counselor_brief.dart';
 import '../logic/intent_normalizer.dart';
 import '../models/models.dart';
 import '../services/app_repository.dart';
+import '../services/backend_api.dart';
 import '../utils/theme.dart';
 
 class ChatMessage {
@@ -16,6 +19,7 @@ class ChatMessage {
     required this.time,
     this.normalized,
     this.askedHandoff = false,
+    this.sources = const [],
   });
 
   final String text;
@@ -23,6 +27,7 @@ class ChatMessage {
   final DateTime time;
   final NormalizedQuestion? normalized;
   final bool askedHandoff;
+  final List<RagSource> sources;
 }
 
 class ChatScreen extends StatefulWidget {
@@ -42,11 +47,39 @@ class _ChatScreenState extends State<ChatScreen> {
   final Random _random = Random();
   String? _conversationId;
   bool _typing = false;
+  DateTime? _cooldownUntil;
+  static const Duration _sendCooldown = Duration(milliseconds: 1500);
+  static const String _convIdPrefsKey = 'employa.chat.conversationId';
+
+  bool get _onCooldown =>
+      _cooldownUntil != null && DateTime.now().isBefore(_cooldownUntil!);
 
   @override
   void initState() {
     super.initState();
     _messages = [_greeting()];
+    _restoreConversationId();
+  }
+
+  Future<void> _restoreConversationId() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString(_convIdPrefsKey);
+      if (saved != null && saved.isNotEmpty && mounted) {
+        setState(() => _conversationId = saved);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _persistConversationId(String? id) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (id == null || id.isEmpty) {
+        await prefs.remove(_convIdPrefsKey);
+      } else {
+        await prefs.setString(_convIdPrefsKey, id);
+      }
+    } catch (_) {}
   }
 
   ChatMessage _greeting() {
@@ -118,7 +151,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _send() async {
     final text = _controller.text.trim();
-    if (text.isEmpty || _typing) return;
+    if (text.isEmpty || _typing || _onCooldown) return;
 
     final normalized = IntentNormalizer.normalize(
       question: text,
@@ -141,21 +174,40 @@ class _ChatScreenState extends State<ChatScreen> {
 
     String reply;
     bool shouldHandoff;
+    List<RagSource> sources = const [];
+    Duration cooldown = _sendCooldown;
     try {
       final remote = await AppRepository.sendChatMessage(
         conversationId: _conversationId,
         message: text,
         mode: widget.storage.profile.mode,
       );
-      _conversationId = remote.conversationId ?? _conversationId;
-      reply = remote.reply;
-      if (remote.usedRag && remote.sourceTitles.isNotEmpty) {
-        reply =
-            '$reply\n\nRAG: ${remote.ragProvider ?? 'backend'} | ${remote.sourceTitles.take(3).join('、')}';
-      } else if (remote.chatProvider == 'gemini') {
-        reply = '$reply\n\n— Gemini chat';
+      final nextConvId = remote.conversationId ?? _conversationId;
+      if (nextConvId != null && nextConvId != _conversationId) {
+        unawaited(_persistConversationId(nextConvId));
       }
+      _conversationId = nextConvId;
+      reply = remote.reply;
+      sources = remote.sources;
       shouldHandoff = remote.shouldHandoff;
+    } on BackendApiException catch (e) {
+      if (e.isRateLimited) {
+        final waitMs = e.retryAfterMs ?? 5000;
+        cooldown = Duration(milliseconds: waitMs);
+        final secs = (waitMs / 1000).ceil();
+        reply = '一下子問太多囉～請等 $secs 秒再試一次喔。'
+            '（為了避免 LLM 配額被打爆，每分鐘限制 30 則訊息）';
+        shouldHandoff = false;
+      } else {
+        await Future.delayed(
+          Duration(milliseconds: 600 + _random.nextInt(500)),
+        );
+        reply = _mockReply(text, normalized);
+        shouldHandoff =
+            normalized.urgency == '高' ||
+            normalized.urgency == '中高' ||
+            normalized.intents.length >= 2;
+      }
     } catch (_) {
       await Future.delayed(Duration(milliseconds: 600 + _random.nextInt(500)));
       reply = _mockReply(text, normalized);
@@ -173,11 +225,17 @@ class _ChatScreenState extends State<ChatScreen> {
           fromUser: false,
           time: DateTime.now(),
           askedHandoff: shouldHandoff,
+          sources: sources,
         ),
       );
       _typing = false;
+      _cooldownUntil = DateTime.now().add(cooldown);
     });
     _scrollToBottom();
+
+    Future.delayed(cooldown, () {
+      if (mounted) setState(() {});
+    });
   }
 
   void _showCounselorBrief(ChatMessage userMsg) {
@@ -262,7 +320,7 @@ class _ChatScreenState extends State<ChatScreen> {
             _Composer(
               controller: _controller,
               onSend: _send,
-              enabled: !_typing,
+              enabled: !_typing && !_onCooldown,
             ),
           ],
         ),
@@ -303,26 +361,130 @@ class _MessageBubble extends StatelessWidget {
             boxShadow: AppColors.shadowSoft,
           );
 
+    final hasSources = !fromUser && message.sources.isNotEmpty;
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Align(
         alignment: align,
         child: ConstrainedBox(
           constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.78,
+            maxWidth: MediaQuery.of(context).size.width * 0.82,
           ),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: decoration,
-            child: Text(
-              message.text,
-              style: TextStyle(
-                fontSize: 15,
-                height: 1.5,
-                color: fromUser ? CupertinoColors.white : AppColors.textPrimary,
+          child: Column(
+            crossAxisAlignment: fromUser
+                ? CrossAxisAlignment.end
+                : CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
+                ),
+                decoration: decoration,
+                child: Text(
+                  message.text,
+                  style: TextStyle(
+                    fontSize: 15,
+                    height: 1.5,
+                    color: fromUser
+                        ? CupertinoColors.white
+                        : AppColors.textPrimary,
+                  ),
+                ),
+              ),
+              if (hasSources) ...[
+                const SizedBox(height: 6),
+                _SourceChips(sources: message.sources),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SourceChips extends StatelessWidget {
+  const _SourceChips({required this.sources});
+
+  final List<RagSource> sources;
+
+  @override
+  Widget build(BuildContext context) {
+    final visible = sources.take(3).toList();
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: [
+        for (final s in visible) _SourceChip(source: s),
+      ],
+    );
+  }
+}
+
+class _SourceChip extends StatelessWidget {
+  const _SourceChip({required this.source});
+
+  final RagSource source;
+
+  Future<void> _open() async {
+    final url = source.url;
+    if (url == null || url.isEmpty) return;
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hasUrl = source.url != null && source.url!.isNotEmpty;
+    return CupertinoButton(
+      padding: EdgeInsets.zero,
+      minimumSize: Size.zero,
+      onPressed: hasUrl ? _open : null,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceMuted,
+          borderRadius: BorderRadius.circular(AppRadii.pill),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              hasUrl
+                  ? CupertinoIcons.link
+                  : CupertinoIcons.doc_text,
+              size: 11,
+              color: hasUrl ? AppColors.brandStart : AppColors.textTertiary,
+            ),
+            const SizedBox(width: 4),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 220),
+              child: Text(
+                source.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
+                  color: hasUrl
+                      ? AppColors.brandStart
+                      : AppColors.textSecondary,
+                ),
               ),
             ),
-          ),
+            if (hasUrl) ...[
+              const SizedBox(width: 2),
+              const Icon(
+                CupertinoIcons.arrow_up_right,
+                size: 10,
+                color: AppColors.brandStart,
+              ),
+            ],
+          ],
         ),
       ),
     );

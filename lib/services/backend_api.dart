@@ -7,6 +7,13 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/models.dart';
 import 'supabase_config.dart';
 
+class RagSource {
+  const RagSource({required this.title, this.url});
+
+  final String title;
+  final String? url;
+}
+
 class BackendChatReply {
   const BackendChatReply({
     required this.conversationId,
@@ -15,7 +22,7 @@ class BackendChatReply {
     required this.usedRag,
     this.ragProvider,
     this.chatProvider,
-    this.sourceTitles = const [],
+    this.sources = const [],
   });
 
   final String? conversationId;
@@ -24,12 +31,16 @@ class BackendChatReply {
   final bool usedRag;
   final String? ragProvider;
   final String? chatProvider;
-  final List<String> sourceTitles;
+  final List<RagSource> sources;
 }
 
 class BackendApiException implements Exception {
-  BackendApiException(this.message);
+  BackendApiException(this.message, {this.statusCode, this.retryAfterMs});
   final String message;
+  final int? statusCode;
+  final int? retryAfterMs;
+
+  bool get isRateLimited => statusCode == 429;
 
   @override
   String toString() => 'BackendApiException: $message';
@@ -210,10 +221,17 @@ class BackendApi {
       body: requestBody,
     );
     final rag = data['rag'];
-    final sources = <String>[];
+    final sources = <RagSource>[];
     if (rag is Map && rag['sources'] is List) {
       for (final s in rag['sources'] as List) {
-        if (s is Map && s['title'] is String) sources.add(s['title'] as String);
+        if (s is Map && s['title'] is String) {
+          sources.add(
+            RagSource(
+              title: s['title'] as String,
+              url: s['sourceUrl'] as String?,
+            ),
+          );
+        }
       }
     }
     return BackendChatReply(
@@ -223,7 +241,7 @@ class BackendApi {
       usedRag: rag is Map,
       ragProvider: rag is Map ? rag['provider'] as String? : null,
       chatProvider: data['chatProvider'] as String?,
-      sourceTitles: sources,
+      sources: sources,
     );
   }
 
@@ -298,7 +316,12 @@ class BackendApi {
     if (res.statusCode < 200 || res.statusCode >= 300) {
       final error = decoded['error'];
       final message = error is Map ? error['message'] : res.body;
-      throw BackendApiException('$method $path failed: $message');
+      final retryRaw = error is Map ? error['retryAfterMs'] : null;
+      throw BackendApiException(
+        '$method $path failed: $message',
+        statusCode: res.statusCode,
+        retryAfterMs: retryRaw is int ? retryRaw : null,
+      );
     }
     return decoded;
   }

@@ -246,6 +246,7 @@ export async function answerRagQuery(opts: {
   topK?: number;
   category?: KnowledgeCategory;
   sourceType?: KnowledgeSourceType;
+  history?: Array<{ role: "user" | "assistant"; text: string }>;
 }): Promise<RagQueryResult> {
   const retrievedChunks = searchKnowledge({
     query: buildSearchQuery(opts),
@@ -263,6 +264,7 @@ export async function answerRagQuery(opts: {
     retrievedChunks,
     confidenceScore,
     shouldHandoff,
+    history: opts.history,
   });
 
   const provider = geminiAnswer ? "gemini" : "local";
@@ -550,17 +552,25 @@ async function generateWithGemini(opts: {
   retrievedChunks: RetrievedKnowledgeChunk[];
   confidenceScore: number;
   shouldHandoff: boolean;
+  history?: Array<{ role: "user" | "assistant"; text: string }>;
 }): Promise<string | null> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || opts.retrievedChunks.length === 0) return null;
 
-  const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    model,
-  )}:generateContent`;
+  const primaryModel = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  const fallbackModel =
+    process.env.GEMINI_FALLBACK_MODEL || "gemini-2.5-flash-lite";
+  const modelsToTry = primaryModel === fallbackModel
+    ? [primaryModel]
+    : [primaryModel, fallbackModel];
 
   const systemInstruction =
-    "你是 EmploYA! 的青年職涯與創業服務助理。你只能根據提供的知識庫資料回答，不可以自行編造政策名稱、補助金額、申請資格或網址。若資料不足，請明確說明目前資料不足，並提出需要補充的資訊。回答需包含：問題理解、可用資源、適合原因、下一步行動、是否建議轉交諮詢師。";
+    "你是 EmploYA! 的青年職涯與創業助理「小幫手」，正在跟一位青年朋友聊天。" +
+    "用繁體中文、口語、溫暖、像朋友的口氣回覆，3 到 6 句話即可，避免條列、標題與「**問題理解：**」之類的格式化區塊。" +
+    "把檢索到最相關的 1 到 2 個資源自然地融入句子裡（例如「你可以看看《xxx》這個資源」），" +
+    "不需要重複條列其他資源、不需要重複貼網址（系統會在訊息下方自動把卡片貼上來）。" +
+    "若資料不足或不確定使用者個人資格，誠實說，並引導使用者補充哪一段資訊或預約諮詢師。" +
+    "禁止編造政策名稱、補助金額、申請資格或網址。";
 
   const context = {
     persona: opts.persona ?? null,
@@ -586,41 +596,67 @@ async function generateWithGemini(opts: {
     })),
   };
 
-  try {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": apiKey,
-      },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemInstruction }] },
-        contents: [
+  const recentHistory = (opts.history ?? []).slice(-6);
+  const historyContents = recentHistory.map((h) => ({
+    role: h.role === "assistant" ? "model" : "user",
+    parts: [{ text: h.text }],
+  }));
+
+  const requestBody = JSON.stringify({
+    system_instruction: { parts: [{ text: systemInstruction }] },
+    contents: [
+      ...historyContents,
+      {
+        role: "user",
+        parts: [
           {
-            role: "user",
-            parts: [
-              {
-                text: `使用者問題：${opts.question}\n\n檢索資料 JSON：${JSON.stringify(context)}`,
-              },
-            ],
+            text: `使用者最新問題：${opts.question}\n\n根據以下檢索資料以及上面的對話脈絡回答（記得參考使用者前面說過什麼，不要要求重複資訊）：\n${JSON.stringify(context)}`,
           },
         ],
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 900,
-        },
-      }),
-    });
+      },
+    ],
+    generationConfig: {
+      temperature: 0.2,
+      maxOutputTokens: 900,
+    },
+  });
 
-    if (!response.ok) return null;
-    const json = (await response.json()) as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-    };
-    const text = json.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("").trim();
-    return text || null;
-  } catch {
-    return null;
+  for (const model of modelsToTry) {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      model,
+    )}:generateContent`;
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey,
+        },
+        body: requestBody,
+      });
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        console.error(
+          `[rag.gemini] [${model}] HTTP ${response.status}: ${body.slice(0, 200)}`,
+        );
+        if (response.status === 429 || response.status >= 500) continue;
+        return null;
+      }
+      const json = (await response.json()) as {
+        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      };
+      const text = json.candidates?.[0]?.content?.parts
+        ?.map((part) => part.text ?? "")
+        .join("")
+        .trim();
+      if (text) return text;
+    } catch (err) {
+      console.error(`[rag.gemini] [${model}] threw:`, err);
+      continue;
+    }
   }
+  return null;
 }
 
 function buildLocalAnswer(opts: {
