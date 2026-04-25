@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -258,10 +259,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   ChatMessage _greeting() {
-    final name = widget.storage.profile.name;
-    final greet = name.isNotEmpty
-        ? '嗨 $name！我是 EmploYA 小幫手。想聊職涯方向、面試、創業或心情都可以。'
-        : '嗨，我是 EmploYA 小幫手。想聊聊職涯方向、面試準備、或計畫怎麼推進都可以！';
+    const greet =
+        '我是 YAYA，你的職涯好夥伴！\n想聊什麼嗎？職涯方向、面試問題或心情都可以。';
     return ChatMessage(text: greet, fromUser: false, time: DateTime.now());
   }
 
@@ -568,8 +567,15 @@ class _MessageBubble extends StatelessWidget {
                   vertical: 10,
                 ),
                 decoration: decoration,
-                child: Text(
-                  message.text,
+                child: Text.rich(
+                  TextSpan(
+                    children: _renderMarkdownLinks(
+                      message.text,
+                      baseColor: fromUser
+                          ? CupertinoColors.white
+                          : AppColors.textPrimary,
+                    ),
+                  ),
                   style: TextStyle(
                     fontSize: 15,
                     height: 1.5,
@@ -588,6 +594,51 @@ class _MessageBubble extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// 把訊息裡的 markdown 連結 [文字](url) 拆成可點擊的 TextSpan。
+  /// AI 回覆會在提到 KB 資源時用這個格式內嵌實際的 sourceUrl —
+  /// 沒有的段落則沿用一般 Text。
+  static final RegExp _mdLinkRe = RegExp(r'\[([^\]]+)\]\((https?:[^)\s]+)\)');
+
+  List<InlineSpan> _renderMarkdownLinks(
+    String text, {
+    required Color baseColor,
+  }) {
+    final spans = <InlineSpan>[];
+    var cursor = 0;
+    for (final m in _mdLinkRe.allMatches(text)) {
+      if (m.start > cursor) {
+        spans.add(TextSpan(text: text.substring(cursor, m.start)));
+      }
+      final label = m.group(1) ?? '';
+      final url = m.group(2) ?? '';
+      spans.add(
+        TextSpan(
+          text: label,
+          style: TextStyle(
+            color: message.fromUser ? baseColor : AppColors.brandStart,
+            decoration: TextDecoration.underline,
+            decorationColor: message.fromUser
+                ? baseColor.withValues(alpha: 0.7)
+                : AppColors.brandStart,
+            fontWeight: FontWeight.w700,
+          ),
+          recognizer: TapGestureRecognizer()..onTap = () => _openUrl(url),
+        ),
+      );
+      cursor = m.end;
+    }
+    if (cursor < text.length) {
+      spans.add(TextSpan(text: text.substring(cursor)));
+    }
+    return spans;
+  }
+
+  Future<void> _openUrl(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 }
 

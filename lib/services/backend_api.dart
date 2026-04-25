@@ -356,6 +356,14 @@ class BackendApi {
     return profile;
   }
 
+  /// 從目前 profile 跑 Gemini 生成一段自介。後端會用 in-memory store 的
+  /// profile（chat / persona 路徑都會 write-through 進去），所以前端
+  /// 不用再把 profile 上傳一次。
+  static Future<String> generateSelfIntro() async {
+    final data = await _request('POST', '/api/persona/self-intro');
+    return (data['selfIntro'] as String?)?.trim() ?? '';
+  }
+
   static Future<Persona> generatePersona({
     required UserProfile profile,
     required ExploreResults explore,

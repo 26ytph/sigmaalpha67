@@ -4,6 +4,7 @@ import '../data/interests_catalog.dart';
 import '../data/skills_catalog.dart';
 import '../models/models.dart';
 import '../services/app_repository.dart';
+import '../services/backend_api.dart';
 import '../utils/theme.dart';
 import '../widgets/searchable_picker_sheet.dart';
 import 'resume_export_screen.dart';
@@ -31,6 +32,7 @@ class PersonaScreen extends StatefulWidget {
 
 class _PersonaScreenState extends State<PersonaScreen> {
   bool _summaryEditing = false;
+  bool _summaryGenerating = false;
   late TextEditingController _summary;
 
   // Inline 編輯狀態
@@ -76,6 +78,43 @@ class _PersonaScreenState extends State<PersonaScreen> {
     });
     await AppRepository.syncPersonaText(text);
     setState(() => _summaryEditing = false);
+  }
+
+  /// 用 Gemini 從履歷資料生成自介；只填到輸入框，使用者按「儲存」才會寫入 persona。
+  Future<void> _aiGenerateSummary() async {
+    if (_summaryGenerating) return;
+    setState(() => _summaryGenerating = true);
+    try {
+      final intro = await BackendApi.generateSelfIntro();
+      if (!mounted) return;
+      if (intro.isEmpty) {
+        _showSummaryError('AI 沒有回傳結果，再試一次或手動填寫。');
+        return;
+      }
+      setState(() => _summary.text = intro);
+    } catch (_) {
+      if (!mounted) return;
+      _showSummaryError('連不到後端 AI，請檢查網路後再試一次。');
+    } finally {
+      if (mounted) setState(() => _summaryGenerating = false);
+    }
+  }
+
+  void _showSummaryError(String msg) {
+    showCupertinoDialog<void>(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: const Text('生成失敗'),
+        content: Text(msg),
+        actions: [
+          CupertinoDialogAction(
+            isDefaultAction: true,
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('好'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _toggleStartupMode() async {
@@ -647,6 +686,51 @@ class _PersonaScreenState extends State<PersonaScreen> {
                         ),
                       ),
                       const Spacer(),
+                      CupertinoButton(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        minimumSize: Size.zero,
+                        onPressed:
+                            _summaryGenerating ? null : _aiGenerateSummary,
+                        child: _summaryGenerating
+                            ? const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  CupertinoActivityIndicator(radius: 7),
+                                  SizedBox(width: 6),
+                                  Text(
+                                    '生成中…',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.brandStart,
+                                    ),
+                                  ),
+                                ],
+                              )
+                            : const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    CupertinoIcons.sparkles,
+                                    size: 14,
+                                    color: AppColors.brandStart,
+                                  ),
+                                  SizedBox(width: 4),
+                                  Text(
+                                    'AI 從履歷生成',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.brandStart,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                      ),
+                      AppGaps.w8,
                       CupertinoButton(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 16,

@@ -7,7 +7,8 @@
       "Bash(npx next *)",
       "Bash(flutter pub *)",
       "Bash(flutter build *)",
-      "Bash(pkill -f \"next dev\")"
+      "Bash(pkill -f \"next dev\")",
+      "Bash(grep -n \"child: Text\\(\\\\s*$\\\\|child: Text\\(\\\\s*\\\\n\\\\s*message.text\" lib/screens/chat_screen.dart)"
     ]
   }
 }

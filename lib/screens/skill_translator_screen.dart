@@ -31,11 +31,6 @@ class _SkillTranslatorScreenState extends State<SkillTranslatorScreen> {
     super.dispose();
   }
 
-  void _useExample() {
-    _input.text = '我曾經辦過迎新活動，也參加過課內訪談報告。';
-    _translate();
-  }
-
   Future<void> _translate() async {
     final raw = _input.text.trim();
     if (raw.isEmpty || _translating) return;
@@ -104,7 +99,6 @@ class _SkillTranslatorScreenState extends State<SkillTranslatorScreen> {
   @override
   Widget build(BuildContext context) {
     final history = widget.storage.skillTranslations;
-    final canSave = _draft != null && !_saving;
 
     return CupertinoPageScaffold(
       backgroundColor: AppColors.bg,
@@ -139,21 +133,6 @@ class _SkillTranslatorScreenState extends State<SkillTranslatorScreen> {
           ),
         ),
         middle: const Text('技能翻譯'),
-        trailing: CupertinoButton(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-          minimumSize: Size.zero,
-          onPressed: canSave ? _save : null,
-          child: Text(
-            '加入 Persona',
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w800,
-              color: canSave
-                  ? AppColors.brandStart
-                  : AppColors.textTertiary,
-            ),
-          ),
-        ),
       ),
       child: SafeArea(
         child: ListView(
@@ -277,34 +256,12 @@ class _SkillTranslatorScreenState extends State<SkillTranslatorScreen> {
             ),
           ),
           AppGaps.h12,
-          Row(
-            children: [
-              Expanded(
-                child: CupertinoButton(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  color: AppColors.surfaceMuted,
-                  onPressed: _useExample,
-                  child: const Text(
-                    '塞個例子',
-                    style: TextStyle(
-                      color: AppColors.textPrimary,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ),
-              AppGaps.w8,
-              Expanded(
-                flex: 2,
-                child: CupertinoButton.filled(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  onPressed: _input.text.trim().isEmpty || _translating
-                      ? null
-                      : _translate,
-                  child: const Text('開始翻譯'),
-                ),
-              ),
-            ],
+          CupertinoButton.filled(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            onPressed: _input.text.trim().isEmpty || _translating
+                ? null
+                : _translate,
+            child: Text(_translating ? '翻譯中…' : '開始翻譯'),
           ),
         ],
       ),
@@ -345,6 +302,13 @@ class _SkillTranslatorScreenState extends State<SkillTranslatorScreen> {
           AppGaps.h12,
           for (final g in t.groups) _groupTile(g),
           AppGaps.h12,
+          // 「加入 Persona」 移到「可放履歷的句子」上方 — 翻譯結果一出來就能直接收下。
+          CupertinoButton.filled(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            onPressed: _saving ? null : _save,
+            child: Text(_saving ? '加入中…' : '加入 Persona'),
+          ),
+          AppGaps.h12,
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
@@ -383,32 +347,17 @@ class _SkillTranslatorScreenState extends State<SkillTranslatorScreen> {
                   ),
                 ),
                 AppGaps.h10,
-                Row(
-                  children: [
-                    Expanded(
-                      child: CupertinoButton(
-                        padding: const EdgeInsets.symmetric(vertical: 10),
-                        color: AppColors.surface,
-                        onPressed: () => _copyResume(t.resumeSentence),
-                        child: const Text(
-                          '複製句子',
-                          style: TextStyle(
-                            color: AppColors.textPrimary,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
+                CupertinoButton(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  color: AppColors.surface,
+                  onPressed: () => _copyResume(t.resumeSentence),
+                  child: const Text(
+                    '複製句子',
+                    style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontWeight: FontWeight.w600,
                     ),
-                    AppGaps.w8,
-                    Expanded(
-                      flex: 2,
-                      child: CupertinoButton.filled(
-                        padding: const EdgeInsets.symmetric(vertical: 10),
-                        onPressed: _saving ? null : _save,
-                        child: const Text('加入 Persona'),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ],
             ),

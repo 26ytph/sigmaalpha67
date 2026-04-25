@@ -75,8 +75,8 @@ class _ExploreScreenState extends State<ExploreScreen> {
 
   void _swipe(SwipeDirection dir) {
     final role = _current;
-    // 反向：往左 = 有興趣 / 往右 = 沒興趣
-    final isLike = dir == SwipeDirection.left;
+    // Tinder convention：往右 = 有興趣 / 往左 = 沒興趣
+    final isLike = dir == SwipeDirection.right;
     unawaited(
       AppRepository.recordSwipe(
         cardId: role.id,
@@ -318,23 +318,23 @@ class _ExploreScreenState extends State<ExploreScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      // 左 = 有興趣（LIKE） — 往左滑也是同樣意思
-                      _RoundSwipeButton(
-                        label: 'LIKE',
-                        size: 80,
-                        gradient: AppColors.brandGradient,
-                        iconColor: CupertinoColors.white,
-                        icon: CupertinoIcons.heart_fill,
-                        onPressed: () => _swipe(SwipeDirection.left),
-                      ),
-                      const SizedBox(width: 36),
-                      // 右 = 沒興趣（PASS） — 往右滑同步
+                      // 左 = 沒興趣（PASS） — 往左滑同步
                       _RoundSwipeButton(
                         label: 'PASS',
                         size: 64,
                         bg: AppColors.surface,
                         iconColor: AppColors.iosRed,
                         icon: CupertinoIcons.xmark,
+                        onPressed: () => _swipe(SwipeDirection.left),
+                      ),
+                      const SizedBox(width: 36),
+                      // 右 = 有興趣（LIKE） — 往右滑同步
+                      _RoundSwipeButton(
+                        label: 'LIKE',
+                        size: 80,
+                        gradient: AppColors.brandGradient,
+                        iconColor: CupertinoColors.white,
+                        icon: CupertinoIcons.heart_fill,
                         onPressed: () => _swipe(SwipeDirection.right),
                       ),
                     ],
