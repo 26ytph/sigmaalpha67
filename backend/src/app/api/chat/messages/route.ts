@@ -11,6 +11,7 @@ import {
 } from "@/engines/geminiChat";
 import { answerRagQuery, shouldUseRag } from "@/engines/rag";
 import { generateUserInsight } from "@/engines/userInsight";
+import { processUserQuestion } from "@/engines/normalizeQuestion";
 import {
   buildChatCacheKey,
   checkRate,
@@ -95,6 +96,17 @@ export const POST = withAuth(async (req, { auth }) => {
 
   const profile = body.context?.useProfile === false ? null : store.profiles.get(auth.userId) ?? null;
   const persona = store.personas.get(auth.userId) ?? null;
+
+  // —— 正規化 + tag 抽取（不 await，背景跑；RAG 已經有相似的問答就跳過儲存）——
+  refreshNormalizedQuestionInBackground({
+    userId: auth.userId,
+    conversationId: convId,
+    messageId: userMsg.id,
+    question: body.message,
+    profile,
+    persona,
+    history: conv.messages.slice(0, -1), // 不含這次的 user msg
+  });
   const ragEnabled = body.context?.useRag !== false && shouldUseRag(body.message, mode);
 
   const personaHash = persona
@@ -268,6 +280,50 @@ function refreshInsightInBackground(
       await db.upsertUserInsight(userId, draft);
     } catch (err) {
       console.warn("[insight] background refresh failed:", err);
+    }
+  })();
+}
+
+/**
+ * Per-message normalisation pipeline。
+ *   - 先用 RAG searchKnowledge 看這題是否已經有相似既存問答
+ *   - 沒命中才用 Gemini 整理成正規化摘要 + tags
+ *   - 寫入 normalized_questions（去重後的「新問題清單」），同時把 tags 累加到 user_insights.tags
+ *
+ * 採 fire-and-forget，不阻塞 chat 回覆。
+ */
+function refreshNormalizedQuestionInBackground(opts: {
+  userId: string;
+  conversationId: string;
+  messageId: string;
+  question: string;
+  profile: import("@/types/profile").Profile | null;
+  persona: import("@/types/persona").Persona | null;
+  history: import("@/types/chat").ChatMessage[];
+}) {
+  void (async () => {
+    try {
+      const outcome = await processUserQuestion({
+        question: opts.question,
+        profile: opts.profile,
+        persona: opts.persona,
+        history: opts.history,
+      });
+      if (!outcome.stored) {
+        // KB 已經有相似問題或空訊息 — 跳過 normalized_questions 但**仍可**累積 tag
+        return;
+      }
+      await db.insertNormalizedQuestion(
+        opts.userId,
+        opts.conversationId,
+        opts.messageId,
+        outcome.draft,
+      );
+      if (outcome.draft.tags?.length) {
+        await db.appendUserTags(opts.userId, outcome.draft.tags);
+      }
+    } catch (err) {
+      console.warn("[normalizeQuestion] background pipeline failed:", err);
     }
   })();
 }

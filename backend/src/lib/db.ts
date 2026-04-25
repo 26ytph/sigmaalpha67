@@ -23,6 +23,10 @@ import type { SwipeRecord } from "@/types/swipe";
 import type { SkillTranslation } from "@/types/skill";
 import type { ChatConversation, ChatMessage } from "@/types/chat";
 import type { UserInsight, UserInsightDraft } from "@/types/insight";
+import type {
+  NormalizedQuestionDraft,
+  StoredNormalizedQuestion,
+} from "@/types/normalizedQuestion";
 
 // ---------------------------------------------------------------------------
 // PROFILE
@@ -403,6 +407,129 @@ export async function updateInsightCounselorNote(
     .eq("user_id", userId);
   if (error)
     console.warn("[db] updateInsightCounselorNote failed:", error.message);
+}
+
+/**
+ * 把新 tags 合併進 user_insights.tags（去重、保留順序、上限 12 個）。
+ * 如果還沒有 user_insights row，會 upsert 一筆只有 tags 的最小 row。
+ */
+export async function appendUserTags(userId: string, newTags: string[]) {
+  if (!newTags || newTags.length === 0) return;
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return;
+
+  const existing = await fetchUserInsight(userId);
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  for (const t of [...(existing?.tags ?? []), ...newTags]) {
+    const trimmed = (t ?? "").trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    merged.push(trimmed);
+    if (merged.length >= 12) break;
+  }
+
+  if (existing) {
+    const { error } = await supabase
+      .from("user_insights")
+      .update({ tags: merged })
+      .eq("user_id", userId);
+    if (error) console.warn("[db] appendUserTags update failed:", error.message);
+  } else {
+    const { error } = await supabase
+      .from("user_insights")
+      .insert({ user_id: userId, tags: merged });
+    if (error) console.warn("[db] appendUserTags insert failed:", error.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// NORMALIZED QUESTIONS  (只存「不在既有 RAG KB」的新問題)
+// ---------------------------------------------------------------------------
+
+export async function insertNormalizedQuestion(
+  userId: string,
+  conversationId: string | null,
+  messageId: string | null,
+  draft: NormalizedQuestionDraft,
+): Promise<StoredNormalizedQuestion | null> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("normalized_questions")
+    .insert({
+      user_id: userId,
+      conversation_id: conversationId,
+      message_id: messageId,
+      raw_question: draft.rawQuestion ?? "",
+      normalized_text: draft.normalizedText ?? "",
+      intents: draft.intents ?? [],
+      emotion: draft.emotion ?? "",
+      known_info: draft.knownInfo ?? [],
+      missing_info: draft.missingInfo ?? [],
+      urgency: draft.urgency ?? "中",
+      counselor_summary: draft.counselorSummary ?? "",
+      tags: draft.tags ?? [],
+      novelty_score: draft.noveltyScore ?? 0,
+      closest_kb_title: draft.closestKbTitle ?? "",
+      closest_kb_score: draft.closestKbScore ?? 0,
+      threshold_used: draft.thresholdUsed ?? 0,
+      generated_by: draft.generatedBy ?? "",
+    })
+    .select("*")
+    .single();
+  if (error) {
+    console.warn("[db] insertNormalizedQuestion failed:", error.message);
+    return null;
+  }
+  return rowToStoredQuestion(data);
+}
+
+export async function listNormalizedQuestions(
+  userId: string,
+  limit = 50,
+): Promise<StoredNormalizedQuestion[]> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from("normalized_questions")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.warn("[db] listNormalizedQuestions failed:", error.message);
+    return [];
+  }
+  return (data ?? []).map(rowToStoredQuestion);
+}
+
+function rowToStoredQuestion(row: Record<string, unknown>): StoredNormalizedQuestion {
+  return {
+    id: (row.id as string) ?? "",
+    userId: (row.user_id as string) ?? "",
+    conversationId: (row.conversation_id as string | null) ?? null,
+    messageId: (row.message_id as string | null) ?? null,
+    rawQuestion: (row.raw_question as string) ?? "",
+    normalizedText: (row.normalized_text as string) ?? "",
+    intents: Array.isArray(row.intents) ? (row.intents as string[]) : [],
+    emotion: (row.emotion as string) ?? "",
+    knownInfo: Array.isArray(row.known_info) ? (row.known_info as string[]) : [],
+    missingInfo: Array.isArray(row.missing_info)
+      ? (row.missing_info as string[])
+      : [],
+    urgency:
+      (row.urgency as StoredNormalizedQuestion["urgency"]) ?? "中",
+    counselorSummary: (row.counselor_summary as string) ?? "",
+    tags: Array.isArray(row.tags) ? (row.tags as string[]) : [],
+    noveltyScore: Number(row.novelty_score ?? 0),
+    closestKbTitle: (row.closest_kb_title as string) ?? "",
+    closestKbScore: Number(row.closest_kb_score ?? 0),
+    thresholdUsed: Number(row.threshold_used ?? 0),
+    generatedBy: (row.generated_by as string) ?? "",
+    createdAt:
+      (row.created_at as string) ?? new Date().toISOString(),
+  };
 }
 
 /** Load all messages of a conversation, oldest first (chat order). */
