@@ -133,7 +133,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         if (_startupInterest) return _goals.isNotEmpty;
         return _stage.isNotEmpty && _goals.isNotEmpty;
       case 3:
-        return _interests.isNotEmpty;
+        // 興趣為選填，可跳過（之後可在「我的檔案」加上）
+        return true;
       case 4:
         return true;
       default:
@@ -507,7 +508,40 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _heading('讓我們先認識你', 'Step 1 ・ 基本資料'),
-          AppGaps.h16,
+          AppGaps.h12,
+          // 第一次填資料時的小提示 — 編輯模式就不再顯示，省版面
+          if (!widget.editing) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: AppColors.bgAlt,
+                borderRadius: BorderRadius.circular(AppRadii.md),
+                border: Border.all(color: AppColors.border),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    CupertinoIcons.info_circle_fill,
+                    size: 16,
+                    color: AppColors.brandStart,
+                  ),
+                  AppGaps.w8,
+                  const Expanded(
+                    child: Text(
+                      '這些資料以後都可以在 APP 內修改，不用一次填到完美。',
+                      style: TextStyle(
+                        fontSize: 12,
+                        height: 1.5,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            AppGaps.h12,
+          ] else
+            AppGaps.h4,
           _label('姓名', required: true),
           CupertinoTextField(
             controller: _name,
@@ -746,7 +780,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             const Padding(
               padding: EdgeInsets.only(top: 6, bottom: 4),
               child: Text(
-                '至少選 1 項，後續滑卡會根據你的選擇微調 Persona。',
+                '可以複選；不勾也沒關係，之後可以在「我的檔案」隨時補上。',
                 style: TextStyle(fontSize: 12, color: AppColors.textTertiary),
               ),
             ),

@@ -23,7 +23,6 @@ class HomeScreen extends StatefulWidget {
     required this.onStartExplore,
     required this.onOpenPlan,
     required this.onOpenPersona,
-    required this.onOpenSkillTranslator,
     required this.onOpenChat,
   });
 
@@ -32,7 +31,6 @@ class HomeScreen extends StatefulWidget {
   final VoidCallback onStartExplore;
   final VoidCallback onOpenPlan;
   final VoidCallback onOpenPersona;
-  final VoidCallback onOpenSkillTranslator;
   final VoidCallback onOpenChat;
 
   @override
@@ -97,7 +95,6 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final p = storage.profile;
-    final persona = storage.persona;
     final liked = storage.explore.likedRoleIds;
     final swiped = liked.length + storage.explore.dislikedRoleIds.length;
 
@@ -113,8 +110,6 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             _topBar(p),
             AppGaps.h16,
-            _heroCard(persona, liked, swiped),
-            AppGaps.h14,
             if (question != null) ...[
               _dailySection(question, answeredToday),
               AppGaps.h14,
@@ -268,138 +263,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _heroCard(Persona persona, List<RoleId> liked, int swiped) {
-    final hasPersona = !persona.isEmpty;
-    final headline = _isStartup ? '你的創業 Persona' : '你的職涯 Persona';
-    final emptyText = _isStartup
-        ? '還沒生成創業 Persona — 完成資料後 AI 會根據你的想法、資源與階段，給你一段可隨時更新的創業者輪廓。'
-        : '還沒有屬於你的人物輪廓 — 完成基本資料後，AI 會為你生成一段可隨時更新的 Persona 描述。';
-
-    return Container(
-      padding: const EdgeInsets.fromLTRB(20, 22, 20, 20),
-      decoration: BoxDecoration(
-        gradient: _isStartup
-            ? const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFFFFE7CC), Color(0xFFFFD4DD), Color(0xFFFFE4EC)],
-              )
-            : AppColors.heroGradient,
-        borderRadius: BorderRadius.circular(AppRadii.xxl),
-        boxShadow: AppColors.shadow,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(AppRadii.pill),
-                  boxShadow: AppColors.shadowSoft,
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      _isStartup
-                          ? CupertinoIcons.flame_fill
-                          : CupertinoIcons.sparkles,
-                      size: 12,
-                      color: _isStartup
-                          ? const Color(0xFFFE8A4F)
-                          : AppColors.brandStart,
-                    ),
-                    AppGaps.w6,
-                    Text(
-                      headline,
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w800,
-                        color: _isStartup
-                            ? const Color(0xFFFE8A4F)
-                            : AppColors.brandStart,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          AppGaps.h12,
-          if (hasPersona)
-            Text(
-              persona.text,
-              maxLines: 5,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 15,
-                height: 1.7,
-                color: AppColors.textPrimary,
-              ),
-            )
-          else
-            Text(
-              emptyText,
-              style: const TextStyle(
-                fontSize: 14,
-                height: 1.65,
-                color: AppColors.textPrimary,
-              ),
-            ),
-          AppGaps.h14,
-          Row(
-            children: [
-              Expanded(
-                child: CupertinoButton(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  color: _isStartup
-                      ? const Color(0xFFFE8A4F)
-                      : AppColors.brandStart,
-                  borderRadius: BorderRadius.circular(AppRadii.md),
-                  onPressed: widget.onOpenPersona,
-                  child: Text(
-                    hasPersona ? '查看 Persona' : '建立 Persona',
-                    style: const TextStyle(
-                      color: CupertinoColors.white,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                ),
-              ),
-              AppGaps.w8,
-              Expanded(
-                child: CupertinoButton(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(AppRadii.md),
-                  onPressed: widget.onStartExplore,
-                  child: const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(CupertinoIcons.heart_fill,
-                          size: 14, color: AppColors.brandStart),
-                      AppGaps.w6,
-                      Text(
-                        '滑卡探索',
-                        style: TextStyle(
-                          color: AppColors.textPrimary,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _statsRow(int swiped, int liked) {
     return Row(
       children: [
@@ -502,59 +365,32 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _featureGrid() {
-    final entries = _isStartup
-        ? [
-            _FeatureEntry(
-              icon: CupertinoIcons.flame_fill,
-              title: '創業 To-do',
-              subtitle: '驗證、資源、申請補助',
-              onTap: widget.onOpenPlan,
-            ),
-            _FeatureEntry(
-              icon: CupertinoIcons.chat_bubble_2_fill,
-              title: '創業 AI 諮詢',
-              subtitle: '帶有導師交接單的對話',
-              onTap: widget.onOpenChat,
-            ),
-            _FeatureEntry(
-              icon: CupertinoIcons.text_badge_plus,
-              title: '技能翻譯',
-              subtitle: '把經驗變履歷句子',
-              onTap: widget.onOpenSkillTranslator,
-            ),
-            _FeatureEntry(
-              icon: CupertinoIcons.person_crop_circle_fill,
-              title: '創業 Persona',
-              subtitle: '可編輯的創業者輪廓',
-              onTap: widget.onOpenPersona,
-            ),
-          ]
-        : [
-            _FeatureEntry(
-              icon: CupertinoIcons.text_badge_plus,
-              title: '技能翻譯',
-              subtitle: '把生活經驗變履歷',
-              onTap: widget.onOpenSkillTranslator,
-            ),
-            _FeatureEntry(
-              icon: CupertinoIcons.doc_text_fill,
-              title: '行動計畫',
-              subtitle: '4–8 週路線圖',
-              onTap: widget.onOpenPlan,
-            ),
-            _FeatureEntry(
-              icon: CupertinoIcons.chat_bubble_2_fill,
-              title: 'AI 諮詢',
-              subtitle: '帶有交接單的對話',
-              onTap: widget.onOpenChat,
-            ),
-            _FeatureEntry(
-              icon: CupertinoIcons.person_crop_circle_fill,
-              title: 'Persona',
-              subtitle: '你的可編輯輪廓',
-              onTap: widget.onOpenPersona,
-            ),
-          ];
+    final entries = [
+      _FeatureEntry(
+        icon: CupertinoIcons.person_crop_circle_fill,
+        title: '我的檔案',
+        subtitle: '個人輪廓 / 履歷',
+        onTap: widget.onOpenPersona,
+      ),
+      _FeatureEntry(
+        icon: CupertinoIcons.heart_fill,
+        title: '滑卡探索',
+        subtitle: '無限滑卡找方向',
+        onTap: widget.onStartExplore,
+      ),
+      _FeatureEntry(
+        icon: CupertinoIcons.doc_text_fill,
+        title: '我的職涯路徑',
+        subtitle: '計畫 / 路線圖 / 任務',
+        onTap: widget.onOpenPlan,
+      ),
+      _FeatureEntry(
+        icon: CupertinoIcons.chat_bubble_2_fill,
+        title: 'YAYA - AI 助理',
+        subtitle: '帶交接單的對話',
+        onTap: widget.onOpenChat,
+      ),
+    ];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [

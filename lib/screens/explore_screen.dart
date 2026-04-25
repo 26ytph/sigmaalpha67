@@ -52,10 +52,12 @@ class _ExploreScreenState extends State<ExploreScreen> {
 
   void _swipe(SwipeDirection dir) {
     final role = _current;
+    // 反向：往左 = 有興趣 / 往右 = 沒興趣
+    final isLike = dir == SwipeDirection.left;
     unawaited(
       AppRepository.recordSwipe(
         cardId: role.id,
-        liked: dir == SwipeDirection.right,
+        liked: isLike,
       ),
     );
 
@@ -63,7 +65,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
       final liked = [...prev.explore.likedRoleIds];
       final disliked = [...prev.explore.dislikedRoleIds];
 
-      if (dir == SwipeDirection.right) {
+      if (isLike) {
         disliked.remove(role.id);
         if (!liked.contains(role.id)) liked.add(role.id);
       } else {
@@ -293,21 +295,23 @@ class _ExploreScreenState extends State<ExploreScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      _RoundSwipeButton(
-                        label: 'PASS',
-                        size: 64,
-                        bg: AppColors.surface,
-                        iconColor: AppColors.iosRed,
-                        icon: CupertinoIcons.xmark,
-                        onPressed: () => _swipe(SwipeDirection.left),
-                      ),
-                      const SizedBox(width: 36),
+                      // 左 = 有興趣（LIKE） — 往左滑也是同樣意思
                       _RoundSwipeButton(
                         label: 'LIKE',
                         size: 80,
                         gradient: AppColors.brandGradient,
                         iconColor: CupertinoColors.white,
                         icon: CupertinoIcons.heart_fill,
+                        onPressed: () => _swipe(SwipeDirection.left),
+                      ),
+                      const SizedBox(width: 36),
+                      // 右 = 沒興趣（PASS） — 往右滑同步
+                      _RoundSwipeButton(
+                        label: 'PASS',
+                        size: 64,
+                        bg: AppColors.surface,
+                        iconColor: AppColors.iosRed,
+                        icon: CupertinoIcons.xmark,
                         onPressed: () => _swipe(SwipeDirection.right),
                       ),
                     ],
