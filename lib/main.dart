@@ -2,6 +2,7 @@ import 'package:employa/screens/plan_todos_screen.dart';
 import 'package:flutter/cupertino.dart';
 
 import 'models/models.dart';
+import 'screens/chat_screen.dart';
 import 'screens/explore_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/plan_screen.dart';
@@ -89,7 +90,8 @@ class _AppShellState extends State<AppShell> {
                 PlanTodosScreen(
                   storage: storage,
                   onStorageChanged: _setStorage,
-                )
+                ),
+                const ChatScreen(),
               ],
             ),
           ),
@@ -113,6 +115,10 @@ class _AppShellState extends State<AppShell> {
               BottomNavigationBarItem(
                 icon: Icon(CupertinoIcons.list_bullet),
                 label: 'TODO',
+              ),
+              BottomNavigationBarItem(
+                icon: Icon(CupertinoIcons.chat_bubble_2_fill),
+                label: 'AI',
               ),
             ],
           ),
