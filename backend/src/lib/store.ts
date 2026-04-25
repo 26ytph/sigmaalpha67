@@ -2,6 +2,7 @@
 // TODO: replace with a real database (Postgres / Mongo / Firestore / Supabase…).
 
 import type { Profile } from "@/types/profile";
+import type { CounselorProfile } from "@/types/counselorProfile";
 import type { Persona } from "@/types/persona";
 import type { SwipeRecord } from "@/types/swipe";
 import type { SkillTranslation } from "@/types/skill";
@@ -13,6 +14,7 @@ import type { KnowledgeChunk, KnowledgeSource, RagLog } from "@/types/knowledge"
 
 type StoreShape = {
   profiles: Map<string, Profile>;
+  counselorProfiles: Map<string, CounselorProfile>;
   personas: Map<string, Persona>;
   swipes: Map<string, SwipeRecord[]>;
   translations: Map<string, SkillTranslation[]>;
@@ -35,6 +37,7 @@ declare global {
 function createStore(): StoreShape {
   return {
     profiles: new Map(),
+    counselorProfiles: new Map(),
     personas: new Map(),
     swipes: new Map(),
     translations: new Map(),

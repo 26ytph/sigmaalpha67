@@ -232,7 +232,7 @@ export const POST = withAuth(async (req, { auth }) => {
   // —— 每 4 則使用者訊息（即每 8 則 total）就 fire-and-forget 重算一次 insight ——
   //    或者：這次被標 shouldHandoff 也立刻重算（諮詢師可能要看了）。
   const userTurns = conv.messages.filter((m) => m.role === "user").length;
-  if (userTurns > 0 && (userTurns % 4 === 0 || shouldHandoff)) {
+  if (userTurns > 0 && (userTurns % 2 === 0 || shouldHandoff)) {
     refreshInsightInBackground(auth.userId, conv.messages);
   }
 

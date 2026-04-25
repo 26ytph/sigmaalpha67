@@ -9,6 +9,9 @@ export default function Page() {
       <p>
         Health check: <a href="/api/health">/api/health</a>
       </p>
+      <p>
+        Counselor console: <a href="/counselor/login">/counselor/login</a>
+      </p>
     </main>
   );
 }

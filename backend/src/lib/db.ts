@@ -18,6 +18,7 @@
 
 import { getSupabaseAdmin } from "./supabase";
 import type { Profile } from "@/types/profile";
+import type { CounselorProfile } from "@/types/counselorProfile";
 import type { Persona } from "@/types/persona";
 import type { SwipeRecord } from "@/types/swipe";
 import type { SkillTranslation } from "@/types/skill";
@@ -88,6 +89,75 @@ export async function fetchProfile(userId: string): Promise<Profile | null> {
     startupInterest: data.startup_interest === true,
     createdAt: data.created_at ?? "",
     updatedAt: data.updated_at ?? "",
+  };
+}
+
+/**
+ * 給諮詢師端用：列出所有有 profile 的使用者（id + 顯示名稱）。
+ * Supabase 沒設定就回空陣列，呼叫端會自動 fallback 到 in-memory。
+ */
+export async function listAllUsersForCounselor(
+  limit = 200,
+): Promise<Array<{ userId: string; name: string; email: string }>> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("user_id, name, email, updated_at")
+    .order("updated_at", { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.warn("[db] listAllUsersForCounselor failed:", error.message);
+    return [];
+  }
+  return (data ?? []).map((r: Record<string, unknown>) => ({
+    userId: (r.user_id as string) ?? "",
+    name: (((r.name as string) ?? "") + "").trim(),
+    email: (((r.email as string) ?? "") + "").trim(),
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// COUNSELOR PROFILE  (independent table; doesn't share `profiles`)
+// ---------------------------------------------------------------------------
+
+export async function upsertCounselorProfile(
+  userId: string,
+  p: CounselorProfile,
+) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return;
+  const row = {
+    user_id: userId,
+    name: p.name ?? "",
+    description: p.description ?? "",
+    expertise: p.expertise ?? [],
+    email: p.email ?? "",
+  };
+  const { error } = await supabase
+    .from("counselor_profiles")
+    .upsert(row, { onConflict: "user_id" });
+  if (error) console.warn("[db] upsertCounselorProfile failed:", error.message);
+}
+
+export async function fetchCounselorProfile(
+  userId: string,
+): Promise<CounselorProfile | null> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("counselor_profiles")
+    .select("*")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error || !data) return null;
+  return {
+    name: (data.name as string) ?? "",
+    description: (data.description as string) ?? "",
+    expertise: Array.isArray(data.expertise) ? (data.expertise as string[]) : [],
+    email: (data.email as string) ?? "",
+    createdAt: (data.created_at as string) ?? "",
+    updatedAt: (data.updated_at as string) ?? "",
   };
 }
 
