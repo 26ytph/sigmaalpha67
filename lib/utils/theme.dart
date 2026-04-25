@@ -1,29 +1,34 @@
 import 'package:flutter/cupertino.dart';
 
-/// 整體調性：以 iOS（Settings.app）為主軸 — 使用 systemGroupedBackground、
-/// 白色 inset list 卡與細線分隔；品牌粉只保留在主要 CTA 與 Explore 滑卡情境，
-/// 其他畫面以 iOS 系統色為主。
+/// 整體調性：交友軟體（Tinder/Bumble）風 — 暖粉漸層、心型圖騰、柔焦白卡。
+/// AI 相關用紫色／靛色微點綴（保留辨識度）。
 class AppColors {
   AppColors._();
 
-  // —— iOS system background ——
-  static const bg = Color(0xFFF2F2F7);             // systemGroupedBackground
-  static const bgAlt = Color(0xFFFFE4EC);          // 給 hero 用的暖粉
+  // —— 背景：奶油粉 + 漸層紗 ——
+  static const bg = Color(0xFFFFF5F8);
+  static const bgAlt = Color(0xFFFFE4EC);
+  static const bgPeach = Color(0xFFFFEFE7);
   static const surface = Color(0xFFFFFFFF);
-  static const surfaceMuted = Color(0xFFF2F2F7);
+  static const surfaceMuted = Color(0xFFFAF3F5);
 
-  // —— iOS text ——
-  static const textPrimary = Color(0xFF000000);
-  static const textSecondary = Color(0xFF3C3C43);  // 60% in iOS spec
-  static const textTertiary = Color(0xFF8E8E93);
+  // —— 文字 ——
+  static const textPrimary = Color(0xFF1F1A24);
+  static const textSecondary = Color(0xFF4A3F51);
+  static const textTertiary = Color(0xFF8A7C8E);
   static const textMuted = Color(0xFFAEAEB2);
 
-  // —— iOS hairlines ——
-  static const border = Color(0xFFE5E5EA);
-  static const separator = Color(0xFFC6C6C8);
-  static const borderStrong = Color(0xFFD1D1D6);
+  // —— 細線 ——
+  static const border = Color(0x14000000);
+  static const separator = Color(0x1FFE3C72);
+  static const borderStrong = Color(0x26000000);
 
-  // —— iOS system semantic ——
+  // —— 主品牌：熱粉 → 珊瑚 → 日落 ——
+  static const brandStart = Color(0xFFFE3C72);
+  static const brandMid = Color(0xFFFF655B);
+  static const brandEnd = Color(0xFFFFA463);
+
+  // —— iOS / 系統色（保留兼容）——
   static const iosBlue = Color(0xFF007AFF);
   static const iosGreen = Color(0xFF34C759);
   static const iosOrange = Color(0xFFFF9500);
@@ -31,18 +36,13 @@ class AppColors {
   static const iosPurple = Color(0xFFAF52DE);
   static const iosTeal = Color(0xFF5AC8FA);
 
-  // —— Brand（CTA / 滑卡 用）——
-  static const brandStart = Color(0xFFFE3C72);
-  static const brandMid = Color(0xFFFF655B);
-  static const brandEnd = Color(0xFFFFA463);
-
-  // —— 兼容舊命名（其他畫面引用過）——
-  static const accentIndigo = Color(0xFF5856D6);   // iOS indigo
+  // —— 兼容舊命名 ——
+  static const accentIndigo = Color(0xFF5856D6);
   static const accentPurple = iosPurple;
   static const accentMagenta = brandStart;
   static const accentSky = iosTeal;
   static const accentEmerald = iosGreen;
-  static const accentRose = iosRed;
+  static const accentRose = brandStart;
   static const accentAmber = iosOrange;
   static const ok = iosGreen;
   static const warn = iosOrange;
@@ -54,10 +54,16 @@ class AppColors {
     colors: [brandStart, brandMid, brandEnd],
   );
 
+  static const heartGradient = LinearGradient(
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+    colors: [Color(0xFFFF7ABF), Color(0xFFFE3C72), Color(0xFFFF655B)],
+  );
+
   static const softGradient = LinearGradient(
     begin: Alignment.topLeft,
     end: Alignment.bottomRight,
-    colors: [Color(0x33FE3C72), Color(0x33FFA463)],
+    colors: [Color(0x40FE3C72), Color(0x40FFA463)],
   );
 
   static const aiGradient = LinearGradient(
@@ -79,39 +85,39 @@ class AppColors {
     colors: [Color(0xFFFFB347), Color(0xFFFE8A4F), Color(0xFFFE3C72)],
   );
 
-  // —— 陰影（iOS 系統卡片風格，極輕）——
+  // —— 陰影：粉色暈，仿 Tinder 浮起感 ——
   static const shadow = [
     BoxShadow(
-      blurRadius: 16,
-      offset: Offset(0, 4),
-      color: Color(0x14000000),
+      blurRadius: 28,
+      offset: Offset(0, 14),
+      color: Color(0x33FE3C72),
     ),
   ];
 
   static const shadowSoft = [
     BoxShadow(
-      blurRadius: 8,
-      offset: Offset(0, 2),
-      color: Color(0x0A000000),
+      blurRadius: 16,
+      offset: Offset(0, 8),
+      color: Color(0x1AFE3C72),
     ),
   ];
 
   static const shadowNeutral = [
     BoxShadow(
-      blurRadius: 6,
-      offset: Offset(0, 2),
-      color: Color(0x08000000),
+      blurRadius: 10,
+      offset: Offset(0, 4),
+      color: Color(0x141F1A24),
     ),
   ];
 }
 
 class AppRadii {
   AppRadii._();
-  static const sm = 8.0;
-  static const md = 12.0;
-  static const lg = 14.0;
-  static const xl = 18.0;
-  static const xxl = 24.0;
+  static const sm = 10.0;
+  static const md = 14.0;
+  static const lg = 18.0;
+  static const xl = 24.0;
+  static const xxl = 32.0;
   static const pill = 999.0;
 }
 

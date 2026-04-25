@@ -1,11 +1,13 @@
 import 'package:flutter/cupertino.dart';
 
 import 'models/models.dart';
+import 'screens/auth_screen.dart';
 import 'screens/chat_screen.dart';
 import 'screens/explore_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/persona_screen.dart';
+import 'screens/plan_roadmap_screen.dart';
 import 'screens/plan_screen.dart';
 import 'screens/plan_todos_screen.dart';
 import 'screens/skill_translator_screen.dart';
@@ -44,8 +46,10 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   AppStorage? _storage;
   int _tabIndex = 0;
-  // Sub-screen state for "我" tab: 0 = Persona, 1 = Skill Translator
+  // 「我」：0 = Persona, 1 = Skill Translator
   int _meSubIndex = 0;
+  // 「計畫」：0 = 路線總覽, 1 = 路線圖, 2 = 週任務
+  int _planSubIndex = 0;
 
   @override
   void initState() {
@@ -90,6 +94,12 @@ class _AppShellState extends State<AppShell> {
 
     final storage = _storage!;
 
+    // —— 1) 沒登入 → AuthScreen ——
+    if (!storage.isAuthenticated) {
+      return AuthScreen(onSignedIn: _setStorage);
+    }
+
+    // —— 2) 已登入但沒 onboard → OnboardingScreen ——
     if (!storage.isOnboarded) {
       return OnboardingScreen(
         initialProfile: storage.profile,
@@ -149,6 +159,7 @@ class _AppShellState extends State<AppShell> {
                 onStorageChanged: _setStorage,
                 onGoToExplore: () => _goTo(1),
               ),
+              PlanRoadmapScreen(storage: storage),
               PlanTodosScreen(
                 storage: storage,
                 onStorageChanged: _setStorage,
@@ -157,25 +168,34 @@ class _AppShellState extends State<AppShell> {
           ),
         ),
         Container(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
           decoration: const BoxDecoration(
             color: AppColors.surface,
             border: Border(top: BorderSide(color: AppColors.border)),
           ),
-          child: Row(
-            children: [
-              _SubTab(
-                label: '路線總覽',
-                selected: _planSubIndex == 0,
-                onTap: () => setState(() => _planSubIndex = 0),
-              ),
-              AppGaps.w8,
-              _SubTab(
-                label: '週任務',
-                selected: _planSubIndex == 1,
-                onTap: () => setState(() => _planSubIndex = 1),
-              ),
-            ],
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _SubTab(
+                  label: '路線總覽',
+                  selected: _planSubIndex == 0,
+                  onTap: () => setState(() => _planSubIndex = 0),
+                ),
+                AppGaps.w8,
+                _SubTab(
+                  label: '路線圖',
+                  selected: _planSubIndex == 1,
+                  onTap: () => setState(() => _planSubIndex = 1),
+                ),
+                AppGaps.w8,
+                _SubTab(
+                  label: '週任務',
+                  selected: _planSubIndex == 2,
+                  onTap: () => setState(() => _planSubIndex = 2),
+                ),
+              ],
+            ),
           ),
         ),
       ],
@@ -191,6 +211,7 @@ class _AppShellState extends State<AppShell> {
               children: [
                 HomeScreen(
                   storage: storage,
+                  onStorageChanged: _setStorage,
                   onStartExplore: () => _goTo(1),
                   onOpenPlan: () => _goTo(3),
                   onOpenPersona: _openPersona,
@@ -241,8 +262,6 @@ class _AppShellState extends State<AppShell> {
       ),
     );
   }
-
-  int _planSubIndex = 0;
 }
 
 class _SubTab extends StatelessWidget {
@@ -274,7 +293,7 @@ class _SubTab extends StatelessWidget {
           label,
           style: TextStyle(
             fontSize: 13,
-            fontWeight: FontWeight.w700,
+            fontWeight: FontWeight.w800,
             color: selected ? CupertinoColors.white : AppColors.textPrimary,
           ),
         ),

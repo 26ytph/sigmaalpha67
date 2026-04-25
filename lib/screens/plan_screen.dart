@@ -1,20 +1,10 @@
 import 'package:flutter/cupertino.dart';
 
-import '../data/daily_questions.dart';
-import '../data/roles.dart';
 import '../logic/generate_plan.dart';
 import '../models/models.dart';
 import '../services/app_repository.dart';
-import '../utils/date_util.dart';
-import '../utils/hash_util.dart';
 import '../utils/plan_todo_keys.dart';
-import '../widgets/daily_question_card.dart';
 import '../widgets/strike_badge.dart';
-
-bool _intersect<T>(List<T> a, List<T> b) {
-  final set = a.toSet();
-  return b.any(set.contains);
-}
 
 class PlanScreen extends StatefulWidget {
   const PlanScreen({
@@ -33,41 +23,6 @@ class PlanScreen extends StatefulWidget {
 }
 
 class _PlanScreenState extends State<PlanScreen> {
-  Future<void> _persist(AppStorage Function(AppStorage prev) fn) async {
-    final next = await AppRepository.update(fn);
-    widget.onStorageChanged(next);
-  }
-
-  DailyQuestion? _pickQuestion(String today) {
-    final answeredToday = widget.storage.dailyAnswers[today];
-    if (answeredToday != null) {
-      for (final q in dailyQuestions) {
-        if (q.id == answeredToday.questionId) return q;
-      }
-      return null;
-    }
-
-    final likedTags = <RoleTag>{};
-    for (final r in roles) {
-      if (widget.storage.explore.likedRoleIds.contains(r.id)) {
-        likedTags.addAll(r.tags);
-      }
-    }
-    final likedTagsList = likedTags.toList();
-
-    final pool = likedTagsList.isNotEmpty
-        ? dailyQuestions
-              .where((q) => _intersect(q.roleTags, likedTagsList))
-              .toList()
-        : dailyQuestions;
-
-    if (pool.isEmpty) {
-      return dailyQuestions.isNotEmpty ? dailyQuestions.first : null;
-    }
-    final idx = hashStringToInt(today) % pool.length;
-    return pool[idx];
-  }
-
   ({int done, int total, int pct}) _todoProgress(GeneratedPlan plan) {
     final keys = <String>[];
     for (final w in plan.weeks) {
@@ -88,25 +43,6 @@ class _PlanScreenState extends State<PlanScreen> {
     }
     final pct = total == 0 ? 0 : ((done / total) * 100).round();
     return (done: done, total: total, pct: pct);
-  }
-
-  void _answer(DailyQuestion q, DailyAnswerValue value) {
-    final today = toLocalDateString();
-    if (widget.storage.dailyAnswers[today] != null) return;
-
-    _persist((prev) {
-      final prevStrike = prev.strike.current;
-      final last = prev.strike.lastAnsweredDate;
-      final nextStrike = isYesterday(last, today) ? prevStrike + 1 : 1;
-
-      final answers = Map<String, DailyAnswerEntry>.from(prev.dailyAnswers);
-      answers[today] = DailyAnswerEntry(questionId: q.id, answer: value);
-
-      return prev.copyWith(
-        dailyAnswers: answers,
-        strike: StrikeState(current: nextStrike, lastAnsweredDate: today),
-      );
-    });
   }
 
   Future<void> _confirmReset() async {
@@ -144,17 +80,7 @@ class _PlanScreenState extends State<PlanScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final today = toLocalDateString();
     final plan = generatePlan(widget.storage.explore.likedRoleIds);
-    final question = _pickQuestion(today);
-    final answeredToday = widget.storage.dailyAnswers[today];
-
-    if (question == null) {
-      return const CupertinoPageScaffold(
-        child: Center(child: CupertinoActivityIndicator()),
-      );
-    }
-
     final overall = _todoProgress(plan);
 
     return CupertinoPageScaffold(
@@ -222,12 +148,6 @@ class _PlanScreenState extends State<PlanScreen> {
                   ],
                 ),
               ],
-            ),
-            const SizedBox(height: 18),
-            DailyQuestionCard(
-              question: question,
-              answered: answeredToday,
-              onAnswer: (v) => _answer(question, v),
             ),
             const SizedBox(height: 18),
             _PlanCard(
@@ -397,17 +317,8 @@ class _PlanScreenState extends State<PlanScreen> {
             ),
             const SizedBox(height: 14),
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                Expanded(
-                  child: Text(
-                    '今日日期：$today（同一天題目固定）',
-                    style: const TextStyle(
-                      fontSize: 11,
-                      color: Color(0xFF52525B),
-                    ),
-                  ),
-                ),
                 CupertinoButton(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 12,

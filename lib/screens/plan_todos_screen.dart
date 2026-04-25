@@ -76,6 +76,18 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
     });
   }
 
+  /// 課程任務的 key 不綁週數，這樣同一門課在多週都會反映同一個完成狀態。
+  static String courseTaskKey(String courseId) => 'course:$courseId';
+
+  void _toggleCourseTask(String courseId) {
+    final key = courseTaskKey(courseId);
+    _persist((prev) {
+      final nextTodos = Map<String, bool>.from(prev.planTodos);
+      nextTodos[key] = !(nextTodos[key] ?? false);
+      return prev.copyWith(planTodos: nextTodos);
+    });
+  }
+
   void _setWeekNote(int week, String note) {
     final key = '$week';
     _persist((prev) {
@@ -282,6 +294,8 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
                                   courses: plan.courses
                                       .where((c) => c.spansWeek(activeWeekData!.week))
                                       .toList(),
+                                  storage: widget.storage,
+                                  onToggleCourse: _toggleCourseTask,
                                 ),
                                 const SizedBox(height: 16),
                                 Container(
@@ -530,12 +544,20 @@ class _TodoRow extends StatelessWidget {
   }
 }
 
-/// 顯示「跨第 N 週」的推薦課程／證照（同一筆會出現在多個週數）
+/// 推薦課程／證照面板：每門課就是一個任務（有 checkbox）。
+/// 完成任務即等同完成課程；同一門課跨多週時，狀態共用。
 class _WeekCoursesPanel extends StatelessWidget {
-  const _WeekCoursesPanel({required this.week, required this.courses});
+  const _WeekCoursesPanel({
+    required this.week,
+    required this.courses,
+    required this.storage,
+    required this.onToggleCourse,
+  });
 
   final int week;
   final List<RecommendedCourse> courses;
+  final AppStorage storage;
+  final ValueChanged<String> onToggleCourse;
 
   @override
   Widget build(BuildContext context) {
@@ -582,7 +604,7 @@ class _WeekCoursesPanel extends StatelessWidget {
                   size: 14, color: AppColors.iosBlue),
               const SizedBox(width: 6),
               const Text(
-                '本週推薦課程／證照',
+                '本週課程任務',
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w700,
@@ -592,7 +614,7 @@ class _WeekCoursesPanel extends StatelessWidget {
               ),
               const Spacer(),
               Text(
-                '${courses.length} 項',
+                '${courses.length} 項 ・ 勾完代表完成課程',
                 style: const TextStyle(
                   fontSize: 11,
                   color: AppColors.textTertiary,
@@ -604,11 +626,16 @@ class _WeekCoursesPanel extends StatelessWidget {
           for (var i = 0; i < courses.length; i++) ...[
             if (i > 0)
               Container(
-                margin: const EdgeInsets.symmetric(vertical: 8),
+                margin: const EdgeInsets.symmetric(vertical: 10),
                 height: 1,
                 color: AppColors.border,
               ),
-            _CourseTile(course: courses[i], currentWeek: week),
+            _CourseTaskTile(
+              course: courses[i],
+              done:
+                  storage.planTodos['course:${courses[i].id}'] ?? false,
+              onToggle: () => onToggleCourse(courses[i].id),
+            ),
           ],
         ],
       ),
@@ -616,11 +643,16 @@ class _WeekCoursesPanel extends StatelessWidget {
   }
 }
 
-class _CourseTile extends StatelessWidget {
-  const _CourseTile({required this.course, required this.currentWeek});
+class _CourseTaskTile extends StatelessWidget {
+  const _CourseTaskTile({
+    required this.course,
+    required this.done,
+    required this.onToggle,
+  });
 
   final RecommendedCourse course;
-  final int currentWeek;
+  final bool done;
+  final VoidCallback onToggle;
 
   @override
   Widget build(BuildContext context) {
@@ -630,86 +662,123 @@ class _CourseTile extends StatelessWidget {
         ? '第 ${course.weeks.first}–${course.weeks.last} 週'
         : '第 ${course.weeks.first} 週';
 
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          width: 30,
-          height: 30,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: tagColor.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(7),
-          ),
-          child: Icon(
-            isCert ? CupertinoIcons.rosette : CupertinoIcons.play_rectangle,
-            size: 14,
-            color: tagColor,
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    return CupertinoButton(
+      padding: EdgeInsets.zero,
+      onPressed: onToggle,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // —— 上方：任務（可勾選）——
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 1),
-                    decoration: BoxDecoration(
-                      color: tagColor.withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Text(
-                      course.type,
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        color: tagColor,
-                      ),
-                    ),
+              Container(
+                width: 22,
+                height: 22,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: done ? tagColor.withValues(alpha: 0.18) : AppColors.surface,
+                  border: Border.all(
+                    color: done ? tagColor : AppColors.borderStrong,
+                    width: 1.5,
                   ),
-                  const SizedBox(width: 6),
-                  Text(
-                    spanLabel,
-                    style: const TextStyle(
-                      fontSize: 11,
-                      color: AppColors.textTertiary,
-                    ),
-                  ),
-                ],
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: done
+                    ? Icon(CupertinoIcons.check_mark,
+                        size: 14, color: tagColor)
+                    : const SizedBox.shrink(),
               ),
-              const SizedBox(height: 4),
-              Text(
-                course.title,
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textPrimary,
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  isCert ? '考取《${course.title}》' : '完成《${course.title}》',
+                  style: TextStyle(
+                    fontSize: 14.5,
+                    fontWeight: FontWeight.w700,
+                    height: 1.4,
+                    decoration: done
+                        ? TextDecoration.lineThrough
+                        : TextDecoration.none,
+                    color: done
+                        ? AppColors.textTertiary
+                        : AppColors.textPrimary,
+                  ),
                 ),
               ),
-              const SizedBox(height: 2),
-              Text(
-                course.provider,
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: AppColors.textTertiary,
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                decoration: BoxDecoration(
+                  color: tagColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(4),
                 ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                course.detail,
-                style: const TextStyle(
-                  fontSize: 12,
-                  height: 1.5,
-                  color: AppColors.textSecondary,
+                child: Text(
+                  course.type,
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: tagColor,
+                  ),
                 ),
               ),
             ],
           ),
-        ),
-      ],
+          const SizedBox(height: 8),
+          // —— 下方：課程詳細資訊 ——
+          Container(
+            margin: const EdgeInsets.only(left: 32),
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+            decoration: BoxDecoration(
+              color: AppColors.bg,
+              borderRadius: BorderRadius.circular(AppRadii.sm),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      isCert
+                          ? CupertinoIcons.rosette
+                          : CupertinoIcons.play_rectangle,
+                      size: 12,
+                      color: tagColor,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        course.provider,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      spanLabel,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: AppColors.textTertiary,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  course.detail,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    height: 1.5,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -1,9 +1,13 @@
 import 'package:flutter/cupertino.dart';
 
+import '../data/interests_catalog.dart';
+import '../data/skills_catalog.dart';
 import '../models/models.dart';
 import '../services/app_repository.dart';
 import '../utils/theme.dart';
+import '../widgets/searchable_picker_sheet.dart';
 import 'onboarding_screen.dart';
+import 'resume_export_screen.dart';
 
 /// 履歷風格的「我」頁。各段（學歷／經歷／技能／興趣）皆可逐項點擊修改／刪除，
 /// 也可從段落上方的「+ 新增」加入新項目。整體採 iOS Settings.app 的群組式 list 風格，
@@ -202,8 +206,11 @@ class _PersonaScreenState extends State<PersonaScreen> {
         case 'school':
           p = p.copyWith(school: v);
           break;
-        case 'age':
-          p = p.copyWith(age: v);
+        case 'birthday':
+          // 只接受合法 YYYY-MM-DD；其他輸入忽略。
+          if (v.isEmpty || isValidYmdDate(v)) {
+            p = p.copyWith(birthday: v);
+          }
           break;
         case 'location':
           p = p.copyWith(location: v);
@@ -215,6 +222,122 @@ class _PersonaScreenState extends State<PersonaScreen> {
       return prev.copyWith(profile: p);
     });
     setState(() => _personalEdit = null);
+  }
+
+  // —— 從字典（fixed list）新增技能／興趣 ——
+  Future<void> _addFromCatalog(String section) async {
+    final excluded = section == 'skill'
+        ? widget.storage.persona.strengths.toSet()
+        : widget.storage.profile.interests.toSet();
+    final picked = await showSearchablePickerSheet(
+      context: context,
+      title: section == 'skill' ? '新增技能' : '新增興趣',
+      catalog: section == 'skill' ? skillsCatalog : interestsCatalog,
+      excluded: excluded,
+    );
+    if (picked == null) return;
+    await _saveListItem(section: section, index: -1, value: picked);
+  }
+
+  Future<void> _confirmRemoveCatalogItem(String section, int index) async {
+    final list = section == 'skill'
+        ? widget.storage.persona.strengths
+        : widget.storage.profile.interests;
+    if (index < 0 || index >= list.length) return;
+    final label = list[index];
+    final go = await showCupertinoDialog<bool>(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: Text('移除「$label」？'),
+        actions: [
+          CupertinoDialogAction(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          CupertinoDialogAction(
+            isDestructiveAction: true,
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('移除'),
+          ),
+        ],
+      ),
+    );
+    if (go != true) return;
+    await _saveListItem(section: section, index: index, value: '');
+  }
+
+  void _openResume() {
+    Navigator.of(context).push(
+      CupertinoPageRoute<void>(
+        builder: (_) => ResumeExportScreen(
+          profile: widget.storage.profile,
+          persona: widget.storage.persona,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickBirthday() async {
+    final cur = widget.storage.profile.birthday;
+    DateTime initial = DateTime(2003, 1, 1);
+    final parsed = cur.isNotEmpty ? DateTime.tryParse(cur) : null;
+    if (parsed != null) initial = parsed;
+
+    DateTime tmp = initial;
+    final picked = await showCupertinoModalPopup<DateTime>(
+      context: context,
+      builder: (ctx) => Container(
+        height: 320,
+        padding: const EdgeInsets.only(top: 6),
+        color: AppColors.surface,
+        child: SafeArea(
+          top: false,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                child: Row(
+                  children: [
+                    CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      onPressed: () => Navigator.pop(ctx, null),
+                      child: const Text('取消',
+                          style: TextStyle(color: AppColors.textSecondary)),
+                    ),
+                    const Spacer(),
+                    CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      onPressed: () => Navigator.pop(ctx, tmp),
+                      child: const Text(
+                        '確認',
+                        style: TextStyle(
+                          color: AppColors.brandStart,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: CupertinoDatePicker(
+                  mode: CupertinoDatePickerMode.date,
+                  initialDateTime: initial,
+                  minimumDate: DateTime(1950, 1, 1),
+                  maximumDate: DateTime.now(),
+                  onDateTimeChanged: (d) => tmp = d,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (picked == null) return;
+    final s = '${picked.year.toString().padLeft(4, '0')}-'
+        '${picked.month.toString().padLeft(2, '0')}-'
+        '${picked.day.toString().padLeft(2, '0')}';
+    await _savePersonalField('birthday', s);
   }
 
   @override
@@ -261,34 +384,26 @@ class _PersonaScreenState extends State<PersonaScreen> {
               placeholder: '例如：系上迎新籌備、課內質化研究訪談',
             ),
             AppGaps.h20,
-            _ListSection(
+            _PickerSection(
               icon: CupertinoIcons.bolt_fill,
               accentColor: AppColors.iosOrange,
               title: '技能',
               items: persona.strengths,
-              section: 'skill',
-              chips: true,
-              activeEdit: _activeEdit,
-              onSetActive: (s) => setState(() => _activeEdit = s),
-              onSave: _saveListItem,
-              placeholder: '例如：活動企劃',
+              onAdd: () => _addFromCatalog('skill'),
+              onRemove: (i) => _confirmRemoveCatalogItem('skill', i),
               footer: _quickEntry(
                 label: '從「技能翻譯」一鍵生成',
                 onTap: widget.onGoToSkillTranslator,
               ),
             ),
             AppGaps.h20,
-            _ListSection(
+            _PickerSection(
               icon: CupertinoIcons.heart_fill,
               accentColor: AppColors.brandStart,
               title: '興趣',
               items: profile.interests,
-              section: 'interest',
-              chips: true,
-              activeEdit: _activeEdit,
-              onSetActive: (s) => setState(() => _activeEdit = s),
-              onSave: _saveListItem,
-              placeholder: '例如：UX Research',
+              onAdd: () => _addFromCatalog('interest'),
+              onRemove: (i) => _confirmRemoveCatalogItem('interest', i),
               footer: _quickEntry(
                 label: '到「探索」滑卡更新興趣',
                 onTap: widget.onGoToExplore,
@@ -413,23 +528,50 @@ class _PersonaScreenState extends State<PersonaScreen> {
             ],
           ),
           AppGaps.h16,
-          SizedBox(
-            width: double.infinity,
-            child: CupertinoButton(
-              padding: const EdgeInsets.symmetric(vertical: 11),
-              color: CupertinoColors.white,
-              borderRadius: BorderRadius.circular(AppRadii.md),
-              onPressed: _openProfileEditor,
-              child: Text(
-                '編輯資料',
-                style: TextStyle(
-                  color: isStartup
-                      ? const Color(0xFFFE8A4F)
-                      : AppColors.brandStart,
-                  fontWeight: FontWeight.w700,
+          Row(
+            children: [
+              Expanded(
+                child: CupertinoButton(
+                  padding: const EdgeInsets.symmetric(vertical: 11),
+                  color: CupertinoColors.white,
+                  borderRadius: BorderRadius.circular(AppRadii.md),
+                  onPressed: _openProfileEditor,
+                  child: Text(
+                    '編輯資料',
+                    style: TextStyle(
+                      color: isStartup
+                          ? const Color(0xFFFE8A4F)
+                          : AppColors.brandStart,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
                 ),
               ),
-            ),
+              AppGaps.w8,
+              Expanded(
+                child: CupertinoButton(
+                  padding: const EdgeInsets.symmetric(vertical: 11),
+                  color: CupertinoColors.white.withValues(alpha: 0.22),
+                  borderRadius: BorderRadius.circular(AppRadii.md),
+                  onPressed: _openResume,
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(CupertinoIcons.cloud_download_fill,
+                          size: 14, color: CupertinoColors.white),
+                      AppGaps.w6,
+                      Text(
+                        '履歷 PDF',
+                        style: TextStyle(
+                          color: CupertinoColors.white,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -562,15 +704,10 @@ class _PersonaScreenState extends State<PersonaScreen> {
             onSave: (v) => _savePersonalField('school', v),
           ),
           const _IosDivider(),
-          _IosListRow(
-            label: '年齡',
-            value: p.age,
-            placeholder: '例如：21',
-            keyboardType: TextInputType.number,
-            active: _personalEdit == 'age',
-            onActivate: () => setState(() => _personalEdit = 'age'),
-            onCancel: () => setState(() => _personalEdit = null),
-            onSave: (v) => _savePersonalField('age', v),
+          _IosBirthdayRow(
+            birthday: p.birthday,
+            age: p.age,
+            onPick: _pickBirthday,
           ),
           const _IosDivider(),
           _IosListRow(
@@ -760,6 +897,64 @@ class _IosDivider extends StatelessWidget {
 }
 
 /// 一行一筆的 iOS 列：點擊後內嵌變成 TextField
+/// 生日列：點擊跳出 CupertinoDatePicker；右側顯示「YYYY-MM-DD ・N 歲」。
+class _IosBirthdayRow extends StatelessWidget {
+  const _IosBirthdayRow({
+    required this.birthday,
+    required this.age,
+    required this.onPick,
+  });
+
+  final String birthday;
+  final int? age;
+  final VoidCallback onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasBirthday = birthday.isNotEmpty && isValidYmdDate(birthday);
+    final right = hasBirthday
+        ? (age != null ? '$birthday ・$age 歲' : birthday)
+        : '選擇生日';
+
+    return CupertinoButton(
+      padding: EdgeInsets.zero,
+      onPressed: onPick,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 88,
+              child: Text(
+                '生日',
+                style: TextStyle(
+                  fontSize: 15,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ),
+            Expanded(
+              child: Text(
+                right,
+                textAlign: TextAlign.right,
+                style: TextStyle(
+                  fontSize: 15,
+                  color: hasBirthday
+                      ? AppColors.textSecondary
+                      : AppColors.textTertiary,
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            const Icon(CupertinoIcons.chevron_right,
+                size: 14, color: AppColors.textTertiary),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _IosListRow extends StatefulWidget {
   const _IosListRow({
     required this.label,
@@ -769,7 +964,6 @@ class _IosListRow extends StatefulWidget {
     required this.onActivate,
     required this.onCancel,
     required this.onSave,
-    this.keyboardType,
   });
 
   final String label;
@@ -779,7 +973,6 @@ class _IosListRow extends StatefulWidget {
   final VoidCallback onActivate;
   final VoidCallback onCancel;
   final ValueChanged<String> onSave;
-  final TextInputType? keyboardType;
 
   @override
   State<_IosListRow> createState() => _IosListRowState();
@@ -829,7 +1022,6 @@ class _IosListRowState extends State<_IosListRow> {
               child: CupertinoTextField(
                 controller: _ctl,
                 autofocus: true,
-                keyboardType: widget.keyboardType,
                 placeholder: widget.placeholder,
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                 decoration: BoxDecoration(
@@ -905,6 +1097,90 @@ class _IosListRowState extends State<_IosListRow> {
   }
 }
 
+/// 字典型選擇區塊：技能 / 興趣專用。
+/// 不允許自由輸入；只能從 `catalog`（由父層透過 `onAdd` 提供的 picker）挑。
+/// 點現有 chip 會詢問是否刪除。
+class _PickerSection extends StatelessWidget {
+  const _PickerSection({
+    required this.icon,
+    required this.accentColor,
+    required this.title,
+    required this.items,
+    required this.onAdd,
+    required this.onRemove,
+    this.footer,
+  });
+
+  final IconData icon;
+  final Color accentColor;
+  final String title;
+  final List<String> items;
+  final VoidCallback onAdd;
+  final ValueChanged<int> onRemove;
+  final Widget? footer;
+
+  @override
+  Widget build(BuildContext context) {
+    return _IosSection(
+      header: title,
+      trailing: CupertinoButton(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        minimumSize: Size.zero,
+        onPressed: onAdd,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(CupertinoIcons.add_circled_solid,
+                size: 14, color: accentColor),
+            AppGaps.w4,
+            Text(
+              '新增',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w800,
+                color: accentColor,
+              ),
+            ),
+          ],
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (items.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Text(
+                  '點右上角「+ 新增」從清單中挑 $title',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: AppColors.textTertiary,
+                  ),
+                ),
+              )
+            else
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (var i = 0; i < items.length; i++)
+                    _Chip(
+                      label: items[i],
+                      accent: accentColor,
+                      onTap: () => onRemove(i),
+                    ),
+                ],
+              ),
+            ?footer,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ListSection extends StatelessWidget {
   const _ListSection({
     required this.icon,
@@ -917,7 +1193,6 @@ class _ListSection extends StatelessWidget {
     required this.onSetActive,
     required this.onSave,
     required this.placeholder,
-    this.footer,
   });
 
   final IconData icon;
@@ -934,7 +1209,6 @@ class _ListSection extends StatelessWidget {
     required String value,
   }) onSave;
   final String placeholder;
-  final Widget? footer;
 
   bool get _addingNew => activeEdit == '$section:new';
 
@@ -1046,7 +1320,6 @@ class _ListSection extends StatelessWidget {
                     ),
                 ],
               ),
-            ?footer,
           ],
         ),
       ),

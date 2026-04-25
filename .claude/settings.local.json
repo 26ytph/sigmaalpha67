@@ -4,7 +4,9 @@
       "Bash(flutter analyze *)",
       "Bash(npm install *)",
       "Bash(npx tsc *)",
-      "Bash(npx next *)"
+      "Bash(npx next *)",
+      "Bash(flutter pub *)",
+      "Bash(flutter build *)"
     ]
   }
 }

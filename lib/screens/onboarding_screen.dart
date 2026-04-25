@@ -1,5 +1,6 @@
 import 'package:flutter/cupertino.dart';
 
+import '../data/interests_catalog.dart';
 import '../logic/persona_engine.dart';
 import '../models/models.dart';
 import '../services/app_repository.dart';
@@ -26,7 +27,6 @@ class OnboardingScreen extends StatefulWidget {
 class _OnboardingScreenState extends State<OnboardingScreen> {
   late final TextEditingController _name;
   late final TextEditingController _school;
-  late final TextEditingController _age;
   late final TextEditingController _contact;
   late final TextEditingController _department;
   late final TextEditingController _location;
@@ -34,11 +34,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   late final TextEditingController _selfIntro;
 
   String _grade = '';
+  String _birthday = ''; // YYYY-MM-DD
   String _stage = '';
   final Set<String> _goals = {};
   final Set<String> _interests = {};
   final Set<String> _experiences = {};
   bool _startupInterest = false;
+
+  // 模擬「打 API」狀態
+  bool _analyzing = false;
+  List<String> _recommendedInterests = [];
 
   int _step = 0;
   static const _totalSteps = 5;
@@ -47,10 +52,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   static const _stageOptions = ['在學探索', '應屆畢業生', '想找實習', '想找正職', '想轉職', '創業探索'];
   static const _goalOptions = [
     '找實習', '找正職', '想轉職', '想創業', '釐清方向', '補強技能', '寫履歷', '練面試',
-  ];
-  static const _interestOptions = [
-    '工程／程式', '資料分析', '產品企劃', 'UI/UX 設計', '行銷／內容', '業務／BD',
-    '人資／教育訓練', '財務／會計', '資安', '影音內容', '社群經營', '客戶服務',
   ];
   static const _experienceOptions = [
     '社團幹部', '系上活動', '課內專案', '實習', '工讀／打工', '比賽／黑客松',
@@ -63,13 +64,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final p = widget.initialProfile;
     _name = TextEditingController(text: p.name);
     _school = TextEditingController(text: p.school);
-    _age = TextEditingController(text: p.age);
     _contact = TextEditingController(text: p.contact);
     _department = TextEditingController(text: p.department);
     _location = TextEditingController(text: p.location);
     _concerns = TextEditingController(text: p.concerns);
     _selfIntro = TextEditingController(text: widget.initialSelfIntro);
     _grade = p.grade;
+    _birthday = p.birthday;
     _stage = p.currentStage;
     _goals.addAll(p.goals);
     _interests.addAll(p.interests);
@@ -81,7 +82,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   void dispose() {
     _name.dispose();
     _school.dispose();
-    _age.dispose();
     _contact.dispose();
     _department.dispose();
     _location.dispose();
@@ -90,12 +90,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     super.dispose();
   }
 
+  bool get _isHighSchool => _grade == '高中';
+
   bool get _canNext {
     switch (_step) {
       case 0:
-        return _name.text.trim().isNotEmpty &&
-            _department.text.trim().isNotEmpty &&
-            _grade.isNotEmpty;
+        // 高中不需要科系
+        final deptOk = _isHighSchool || _department.text.trim().isNotEmpty;
+        return _name.text.trim().isNotEmpty && _grade.isNotEmpty && deptOk;
       case 1:
         return _stage.isNotEmpty && _goals.isNotEmpty;
       case 2:
@@ -109,12 +111,129 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }
   }
 
+  Future<void> _next() async {
+    if (_step == _totalSteps - 1) {
+      await _finish();
+      return;
+    }
+
+    // 完成 Step 1（基本資料）後，模擬向後端要興趣分析
+    if (_step == 0) {
+      setState(() {
+        _step = 1;
+      });
+      // 不必 block 切到 step 2 之前的呼叫；先在背景算
+      _kickInterestAnalysis();
+      return;
+    }
+
+    // 進入 step 3（興趣選單）前，確保已經算完
+    if (_step == 2 && _recommendedInterests.isEmpty) {
+      _kickInterestAnalysis();
+    }
+    setState(() => _step += 1);
+  }
+
+  Future<void> _kickInterestAnalysis() async {
+    setState(() {
+      _analyzing = true;
+    });
+    // 假裝送 request 給後端，1.2 秒後拿到結果
+    await Future<void>.delayed(const Duration(milliseconds: 1200));
+    if (!mounted) return;
+    final recs = recommendedInterestsFor(
+      department: _department.text.trim(),
+      grade: _grade,
+      startupInterest: _startupInterest,
+    );
+    setState(() {
+      _recommendedInterests = recs;
+      _analyzing = false;
+      // 預先勾上 3 個推薦（讓人感覺 AI 有在做事）
+      if (_interests.isEmpty) {
+        _interests.addAll(recs.take(3));
+      }
+    });
+  }
+
+  void _back() {
+    if (_step == 0) {
+      if (widget.editing) Navigator.of(context).maybePop();
+      return;
+    }
+    setState(() => _step -= 1);
+  }
+
+  Future<void> _pickBirthday() async {
+    DateTime initial = DateTime(2003, 1, 1);
+    final parsed = _birthday.isNotEmpty ? DateTime.tryParse(_birthday) : null;
+    if (parsed != null) initial = parsed;
+
+    DateTime tmp = initial;
+    final picked = await showCupertinoModalPopup<DateTime>(
+      context: context,
+      builder: (ctx) => Container(
+        height: 320,
+        padding: const EdgeInsets.only(top: 6),
+        color: AppColors.surface,
+        child: SafeArea(
+          top: false,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                child: Row(
+                  children: [
+                    CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      onPressed: () => Navigator.pop(ctx, null),
+                      child: const Text('取消',
+                          style: TextStyle(color: AppColors.textSecondary)),
+                    ),
+                    const Spacer(),
+                    CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      onPressed: () => Navigator.pop(ctx, tmp),
+                      child: const Text(
+                        '確認',
+                        style: TextStyle(
+                          color: AppColors.brandStart,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: CupertinoDatePicker(
+                  mode: CupertinoDatePickerMode.date,
+                  initialDateTime: initial,
+                  minimumDate: DateTime(1950, 1, 1),
+                  maximumDate: DateTime.now(),
+                  onDateTimeChanged: (d) => tmp = d,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    if (picked == null) return;
+    final s = '${picked.year.toString().padLeft(4, '0')}-'
+        '${picked.month.toString().padLeft(2, '0')}-'
+        '${picked.day.toString().padLeft(2, '0')}';
+    setState(() => _birthday = s);
+  }
+
   Future<void> _finish() async {
-    final defaultEducation = [
+    final eduParts = [
       _school.text.trim(),
-      _department.text.trim(),
+      if (!_isHighSchool) _department.text.trim(),
       _grade,
-    ].where((s) => s.isNotEmpty).join(' ');
+    ].where((s) => s.isNotEmpty).toList();
+    final defaultEducation = eduParts.join(' ');
 
     final eduList = widget.initialProfile.educationItems.isNotEmpty
         ? widget.initialProfile.educationItems
@@ -123,9 +242,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final profile = UserProfile(
       name: _name.text.trim(),
       school: _school.text.trim(),
-      age: _age.text.trim(),
+      birthday: _birthday,
       contact: _contact.text.trim(),
-      department: _department.text.trim(),
+      department: _isHighSchool ? '' : _department.text.trim(),
       grade: _grade,
       location: _location.text.trim(),
       currentStage: _stage,
@@ -142,36 +261,18 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final selfIntroText = _selfIntro.text.trim();
 
     final next = await AppRepository.update((prev) {
-      // 先用 PersonaEngine 算出結構化欄位（不含 text）
       final base = PersonaEngine.generate(
         profile: profile,
         explore: prev.explore,
         skillTranslations: prev.skillTranslations,
         previous: prev.persona,
       );
-      // text 一律以使用者輸入為準（空就維持空）
       final newPersona = base.copyWith(text: selfIntroText, userEdited: true);
       return prev.copyWith(profile: profile, persona: newPersona);
     });
 
     if (!mounted) return;
     widget.onCompleted(next);
-  }
-
-  void _next() {
-    if (_step == _totalSteps - 1) {
-      _finish();
-    } else {
-      setState(() => _step += 1);
-    }
-  }
-
-  void _back() {
-    if (_step == 0) {
-      if (widget.editing) Navigator.of(context).maybePop();
-      return;
-    }
-    setState(() => _step -= 1);
   }
 
   @override
@@ -195,9 +296,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       _step == 0
                           ? (widget.editing
                               ? CupertinoIcons.xmark
-                              : CupertinoIcons.sparkles)
+                              : CupertinoIcons.heart_fill)
                           : CupertinoIcons.back,
-                      color: AppColors.iosBlue,
+                      color: _step == 0 && !widget.editing
+                          ? AppColors.brandStart
+                          : AppColors.textSecondary,
                       size: 22,
                     ),
                   ),
@@ -212,7 +315,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                               widget.editing ? '更新個人資料' : '建立個人輪廓',
                               style: const TextStyle(
                                 fontSize: 13,
-                                fontWeight: FontWeight.w600,
+                                fontWeight: FontWeight.w700,
                                 color: AppColors.textSecondary,
                               ),
                             ),
@@ -230,7 +333,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                         ClipRRect(
                           borderRadius: BorderRadius.circular(AppRadii.pill),
                           child: SizedBox(
-                            height: 4,
+                            height: 6,
                             child: Stack(
                               children: [
                                 const ColoredBox(color: AppColors.border),
@@ -238,7 +341,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                                   widthFactor: progress,
                                   child: const DecoratedBox(
                                     decoration: BoxDecoration(
-                                      color: AppColors.iosBlue,
+                                      gradient: AppColors.brandGradient,
                                     ),
                                   ),
                                 ),
@@ -297,10 +400,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   Widget _wrapCard({required Widget child, Key? key}) {
     return Container(
       key: key,
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadii.lg),
+        borderRadius: BorderRadius.circular(AppRadii.xl),
         boxShadow: AppColors.shadowSoft,
       ),
       child: child,
@@ -316,8 +419,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         Text(
           big,
           style: const TextStyle(
-            fontSize: 22,
-            fontWeight: FontWeight.w700,
+            fontSize: 24,
+            fontWeight: FontWeight.w800,
             letterSpacing: -0.4,
             color: AppColors.textPrimary,
           ),
@@ -334,7 +437,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               text,
               style: const TextStyle(
                 fontSize: 12,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w700,
                 color: AppColors.textSecondary,
               ),
             ),
@@ -344,7 +447,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 '＊',
                 style: TextStyle(
                   fontSize: 12,
-                  fontWeight: FontWeight.w600,
+                  fontWeight: FontWeight.w700,
                   color: AppColors.iosRed,
                 ),
               ),
@@ -354,6 +457,20 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       );
 
   Widget _stepBasic({Key? key}) {
+    final birthdayLabel = _birthday.isEmpty
+        ? '選擇生日'
+        : (() {
+            final dt = isValidYmdDate(_birthday) ? DateTime.parse(_birthday) : null;
+            if (dt == null) return _birthday;
+            final now = DateTime.now();
+            var y = now.year - dt.year;
+            if (now.month < dt.month ||
+                (now.month == dt.month && now.day < dt.day)) {
+              y -= 1;
+            }
+            return '$_birthday ・$y 歲';
+          })();
+
     return _wrapCard(
       key: key,
       child: Column(
@@ -369,19 +486,33 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             onChanged: (_) => setState(() {}),
           ),
           AppGaps.h12,
-          _label('學校（選填）'),
-          CupertinoTextField(
-            controller: _school,
-            placeholder: '例如：國立台灣大學',
+          _label('生日'),
+          CupertinoButton(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          ),
-          AppGaps.h12,
-          _label('科系 / 領域', required: true),
-          CupertinoTextField(
-            controller: _department,
-            placeholder: '例如：社會系、資訊管理',
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            onChanged: (_) => setState(() {}),
+            color: AppColors.surfaceMuted,
+            borderRadius: BorderRadius.circular(AppRadii.md),
+            onPressed: _pickBirthday,
+            child: Row(
+              children: [
+                const Icon(CupertinoIcons.calendar,
+                    size: 16, color: AppColors.brandStart),
+                AppGaps.w8,
+                Expanded(
+                  child: Text(
+                    birthdayLabel,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: _birthday.isEmpty
+                          ? AppColors.textTertiary
+                          : AppColors.textPrimary,
+                    ),
+                  ),
+                ),
+                const Icon(CupertinoIcons.chevron_right,
+                    size: 14, color: AppColors.textTertiary),
+              ],
+            ),
           ),
           AppGaps.h12,
           _label('年級 / 身份', required: true),
@@ -392,38 +523,40 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             single: true,
           ),
           AppGaps.h12,
-          Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _label('年齡（選填）'),
-                    CupertinoTextField(
-                      controller: _age,
-                      placeholder: '例如：21',
-                      keyboardType: TextInputType.number,
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          _label('學校（選填）'),
+          CupertinoTextField(
+            controller: _school,
+            placeholder: '例如：國立台灣大學',
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          ),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 180),
+            child: _isHighSchool
+                ? const SizedBox(key: ValueKey('hide-dept'))
+                : Padding(
+                    key: const ValueKey('show-dept'),
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _label('科系 / 領域', required: true),
+                        CupertinoTextField(
+                          controller: _department,
+                          placeholder: '例如：社會系、資訊管理',
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 12),
+                          onChanged: (_) => setState(() {}),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-              ),
-              AppGaps.w12,
-              Expanded(
-                flex: 2,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _label('聯絡方式（選填）'),
-                    CupertinoTextField(
-                      controller: _contact,
-                      placeholder: 'email 或 IG',
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+                  ),
+          ),
+          AppGaps.h12,
+          _label('聯絡方式（選填）'),
+          CupertinoTextField(
+            controller: _contact,
+            placeholder: 'email 或 IG',
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           ),
           AppGaps.h12,
           _label('居住地（選填）'),
@@ -471,10 +604,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   Widget _stepStartup({Key? key}) {
     return Container(
       key: key,
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadii.lg),
+        borderRadius: BorderRadius.circular(AppRadii.xl),
         boxShadow: AppColors.shadowSoft,
       ),
       child: Column(
@@ -525,13 +658,57 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             'Step 4 ・ 興趣方向',
           ),
           AppGaps.h6,
-          const Text(
-            '至少選 1 項，後續滑卡會根據你的選擇微調 Persona。',
-            style: TextStyle(fontSize: 12, color: AppColors.textTertiary),
-          ),
-          AppGaps.h16,
+          if (_analyzing)
+            Container(
+              margin: const EdgeInsets.only(top: 10, bottom: 4),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColors.bgAlt,
+                borderRadius: BorderRadius.circular(AppRadii.md),
+              ),
+              child: const Row(
+                children: [
+                  CupertinoActivityIndicator(),
+                  AppGaps.w10,
+                  Expanded(
+                    child: Text(
+                      'AI 正在根據你的科系與目標分析興趣方向…',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else if (_recommendedInterests.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6, bottom: 4),
+              child: Text(
+                _isHighSchool
+                    ? '從這些常見方向先試試看（可複選）：'
+                    : '根據你的「${_department.text.trim()}」幫你挑了 ${_recommendedInterests.length} 個方向：',
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppColors.textTertiary,
+                ),
+              ),
+            )
+          else
+            const Padding(
+              padding: EdgeInsets.only(top: 6, bottom: 4),
+              child: Text(
+                '至少選 1 項，後續滑卡會根據你的選擇微調 Persona。',
+                style: TextStyle(fontSize: 12, color: AppColors.textTertiary),
+              ),
+            ),
+          AppGaps.h12,
           _ChipGroup(
-            options: _interestOptions,
+            options: _recommendedInterests.isNotEmpty
+                ? _recommendedInterests
+                : interestsCatalog,
             selected: _interests,
             onChanged: (s) => setState(() {
               _interests
@@ -638,7 +815,7 @@ class _StartupChoice extends StatelessWidget {
               title,
               style: TextStyle(
                 fontSize: 17,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w800,
                 letterSpacing: -0.2,
                 color: selected ? CupertinoColors.white : AppColors.textPrimary,
               ),
@@ -711,17 +888,19 @@ class _Chip extends StatelessWidget {
         duration: const Duration(milliseconds: 140),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(
-          color: selected ? AppColors.iosBlue : AppColors.surfaceMuted,
+          gradient: selected ? AppColors.brandGradient : null,
+          color: selected ? null : AppColors.surfaceMuted,
           borderRadius: BorderRadius.circular(AppRadii.pill),
           border: Border.all(
-            color: selected ? AppColors.iosBlue : AppColors.border,
+            color: selected ? const Color(0x00000000) : AppColors.border,
           ),
+          boxShadow: selected ? AppColors.shadowSoft : null,
         ),
         child: Text(
           label,
           style: TextStyle(
             fontSize: 13,
-            fontWeight: FontWeight.w600,
+            fontWeight: FontWeight.w700,
             color: selected ? CupertinoColors.white : AppColors.textPrimary,
           ),
         ),
@@ -755,16 +934,17 @@ class _ContinueBar extends StatelessWidget {
           width: double.infinity,
           child: CupertinoButton(
             padding: const EdgeInsets.symmetric(vertical: 14),
-            color: AppColors.iosBlue,
+            color: AppColors.brandStart,
             disabledColor: AppColors.borderStrong,
             borderRadius: BorderRadius.circular(AppRadii.md),
             onPressed: canNext ? onNext : null,
             child: Text(
-              isLast ? '完成' : '下一步',
+              isLast ? '完成 ❤' : '下一步',
               style: const TextStyle(
                 color: CupertinoColors.white,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w800,
                 fontSize: 15,
+                letterSpacing: 0.6,
               ),
             ),
           ),

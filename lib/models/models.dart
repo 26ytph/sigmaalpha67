@@ -178,12 +178,40 @@ class StrikeState {
 /// App 模式：求職或創業（由 UserProfile.startupInterest 推導）
 enum AppMode { career, startup }
 
+/// 帳號（demo 用：只保留 email 與登入時間，密碼不存）
+class UserAccount {
+  const UserAccount({required this.email, this.signedInAt});
+
+  final String email;
+  final String? signedInAt;
+
+  bool get isAuthenticated => email.isNotEmpty;
+
+  static UserAccount empty() => const UserAccount(email: '');
+
+  UserAccount copyWith({String? email, String? signedInAt}) {
+    return UserAccount(
+      email: email ?? this.email,
+      signedInAt: signedInAt ?? this.signedInAt,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {'email': email, 'signedInAt': signedInAt};
+
+  static UserAccount fromJson(Map<String, dynamic> j) => UserAccount(
+        email: (j['email'] as String?) ?? '',
+        signedInAt: j['signedInAt'] as String?,
+      );
+}
+
 /// 使用者基本 Profile（Onboarding 收集）
+///
+/// 生日 (`birthday`) 以 'YYYY-MM-DD' 字串儲存；年齡為衍生欄位。
 class UserProfile {
   const UserProfile({
     required this.name,
     required this.school,
-    required this.age,
+    required this.birthday,
     required this.contact,
     required this.department,
     required this.grade,
@@ -200,7 +228,9 @@ class UserProfile {
 
   final String name;
   final String school;
-  final String age;
+
+  /// 'YYYY-MM-DD' 格式的合法日期字串；空字串表示未填。
+  final String birthday;
   final String contact;
   final String department;
   final String grade;
@@ -214,14 +244,39 @@ class UserProfile {
   final bool startupInterest;
   final String? createdAt;
 
-  bool get isEmpty => department.isEmpty && currentStage.isEmpty && goals.isEmpty;
+  bool get isEmpty {
+    // 高中生不需要填科系，所以 isEmpty 不能單看 department。
+    final hasBasic = name.isNotEmpty && grade.isNotEmpty;
+    return !hasBasic && currentStage.isEmpty && goals.isEmpty;
+  }
+
+  /// 從 `birthday` 字串推算的整數年齡；無效或空回 null。
+  int? get age {
+    final d = parsedBirthday;
+    if (d == null) return null;
+    final now = DateTime.now();
+    var years = now.year - d.year;
+    final hadBirthdayThisYear = now.month > d.month ||
+        (now.month == d.month && now.day >= d.day);
+    if (!hadBirthdayThisYear) years -= 1;
+    return years < 0 ? null : years;
+  }
+
+  /// 解析後的合法 DateTime；若 `birthday` 不是合法 'YYYY-MM-DD' 則為 null。
+  DateTime? get parsedBirthday {
+    if (birthday.isEmpty) return null;
+    return _tryParseDate(birthday);
+  }
+
+  /// 高中生不需要填科系
+  bool get departmentRequired => grade != '高中';
 
   AppMode get mode => startupInterest ? AppMode.startup : AppMode.career;
 
   UserProfile copyWith({
     String? name,
     String? school,
-    String? age,
+    String? birthday,
     String? contact,
     String? department,
     String? grade,
@@ -238,7 +293,7 @@ class UserProfile {
     return UserProfile(
       name: name ?? this.name,
       school: school ?? this.school,
-      age: age ?? this.age,
+      birthday: birthday ?? this.birthday,
       contact: contact ?? this.contact,
       department: department ?? this.department,
       grade: grade ?? this.grade,
@@ -257,7 +312,7 @@ class UserProfile {
   static UserProfile empty() => const UserProfile(
         name: '',
         school: '',
-        age: '',
+        birthday: '',
         contact: '',
         department: '',
         grade: '',
@@ -274,7 +329,7 @@ class UserProfile {
   Map<String, dynamic> toJson() => {
         'name': name,
         'school': school,
-        'age': age,
+        'birthday': birthday,
         'contact': contact,
         'department': department,
         'grade': grade,
@@ -293,7 +348,7 @@ class UserProfile {
     return UserProfile(
       name: (j['name'] as String?) ?? '',
       school: (j['school'] as String?) ?? '',
-      age: (j['age'] as String?) ?? '',
+      birthday: (j['birthday'] as String?) ?? '',
       contact: (j['contact'] as String?) ?? '',
       department: (j['department'] as String?) ?? '',
       grade: (j['grade'] as String?) ?? '',
@@ -309,6 +364,24 @@ class UserProfile {
     );
   }
 }
+
+/// 解析 'YYYY-MM-DD' 字串為合法 DateTime；非合法日期回 null。
+DateTime? _tryParseDate(String s) {
+  final m = RegExp(r'^(\d{4})-(\d{2})-(\d{2})$').firstMatch(s);
+  if (m == null) return null;
+  final y = int.parse(m.group(1)!);
+  final mo = int.parse(m.group(2)!);
+  final d = int.parse(m.group(3)!);
+  if (mo < 1 || mo > 12) return null;
+  if (d < 1 || d > 31) return null;
+  // DateTime 會把 2-30 之類非法日期 normalize 成下個月，因此要回頭驗證
+  final dt = DateTime(y, mo, d);
+  if (dt.year != y || dt.month != mo || dt.day != d) return null;
+  return dt;
+}
+
+/// 公開的合法日期檢查（給 UI 使用）
+bool isValidYmdDate(String s) => _tryParseDate(s) != null;
 
 /// 個人輪廓 / Persona
 class Persona {
@@ -483,6 +556,7 @@ class NormalizedQuestion {
 
 class AppStorage {
   const AppStorage({
+    required this.account,
     required this.profile,
     required this.persona,
     required this.explore,
@@ -493,6 +567,7 @@ class AppStorage {
     required this.skillTranslations,
   });
 
+  final UserAccount account;
   final UserProfile profile;
   final Persona persona;
   final ExploreResults explore;
@@ -502,10 +577,12 @@ class AppStorage {
   final StrikeState strike;
   final List<SkillTranslation> skillTranslations;
 
+  bool get isAuthenticated => account.isAuthenticated;
   bool get isOnboarded => !profile.isEmpty;
 
   static AppStorage empty() {
     return AppStorage(
+      account: UserAccount.empty(),
       profile: UserProfile.empty(),
       persona: Persona.empty(),
       explore: const ExploreResults(likedRoleIds: [], dislikedRoleIds: []),
@@ -518,6 +595,7 @@ class AppStorage {
   }
 
   AppStorage copyWith({
+    UserAccount? account,
     UserProfile? profile,
     Persona? persona,
     ExploreResults? explore,
@@ -528,6 +606,7 @@ class AppStorage {
     List<SkillTranslation>? skillTranslations,
   }) {
     return AppStorage(
+      account: account ?? this.account,
       profile: profile ?? this.profile,
       persona: persona ?? this.persona,
       explore: explore ?? this.explore,
@@ -541,6 +620,7 @@ class AppStorage {
 
   Map<String, dynamic> toJson() {
     return {
+      'account': account.toJson(),
       'profile': profile.toJson(),
       'persona': persona.toJson(),
       'explore': {
@@ -574,6 +654,11 @@ class AppStorage {
     final profileRaw = json['profile'];
     final personaRaw = json['persona'];
     final transRaw = json['skillTranslations'];
+    final accountRaw = json['account'];
+
+    final account = accountRaw is Map
+        ? UserAccount.fromJson(Map<String, dynamic>.from(accountRaw))
+        : empty.account;
 
     final profile = profileRaw is Map
         ? UserProfile.fromJson(Map<String, dynamic>.from(profileRaw))
@@ -646,6 +731,7 @@ class AppStorage {
     }
 
     return AppStorage(
+      account: account,
       profile: profile,
       persona: persona,
       explore: explore,

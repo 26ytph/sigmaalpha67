@@ -1,14 +1,25 @@
 import 'package:flutter/cupertino.dart';
 
+import '../data/daily_questions.dart';
 import '../data/roles.dart';
 import '../models/models.dart';
+import '../services/app_repository.dart';
+import '../utils/date_util.dart';
+import '../utils/hash_util.dart';
 import '../utils/theme.dart';
+import '../widgets/daily_question_card.dart';
 import '../widgets/strike_badge.dart';
 
-class HomeScreen extends StatelessWidget {
+bool _intersect<T>(List<T> a, List<T> b) {
+  final set = a.toSet();
+  return b.any(set.contains);
+}
+
+class HomeScreen extends StatefulWidget {
   const HomeScreen({
     super.key,
     required this.storage,
+    required this.onStorageChanged,
     required this.onStartExplore,
     required this.onOpenPlan,
     required this.onOpenPersona,
@@ -17,13 +28,71 @@ class HomeScreen extends StatelessWidget {
   });
 
   final AppStorage storage;
+  final ValueChanged<AppStorage> onStorageChanged;
   final VoidCallback onStartExplore;
   final VoidCallback onOpenPlan;
   final VoidCallback onOpenPersona;
   final VoidCallback onOpenSkillTranslator;
   final VoidCallback onOpenChat;
 
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  AppStorage get storage => widget.storage;
   bool get _isStartup => storage.profile.startupInterest;
+
+  DailyQuestion? _pickQuestion(String today) {
+    final answeredToday = storage.dailyAnswers[today];
+    if (answeredToday != null) {
+      for (final q in dailyQuestions) {
+        if (q.id == answeredToday.questionId) return q;
+      }
+      return null;
+    }
+
+    final likedTags = <RoleTag>{};
+    for (final r in roles) {
+      if (storage.explore.likedRoleIds.contains(r.id)) {
+        likedTags.addAll(r.tags);
+      }
+    }
+    final likedTagsList = likedTags.toList();
+
+    final pool = likedTagsList.isNotEmpty
+        ? dailyQuestions
+            .where((q) => _intersect(q.roleTags, likedTagsList))
+            .toList()
+        : dailyQuestions;
+
+    if (pool.isEmpty) {
+      return dailyQuestions.isNotEmpty ? dailyQuestions.first : null;
+    }
+    final idx = hashStringToInt(today) % pool.length;
+    return pool[idx];
+  }
+
+  Future<void> _answer(DailyQuestion q, DailyAnswerValue value) async {
+    final today = toLocalDateString();
+    if (storage.dailyAnswers[today] != null) return;
+
+    final next = await AppRepository.update((prev) {
+      final prevStrike = prev.strike.current;
+      final last = prev.strike.lastAnsweredDate;
+      final nextStrike = isYesterday(last, today) ? prevStrike + 1 : 1;
+
+      final answers = Map<String, DailyAnswerEntry>.from(prev.dailyAnswers);
+      answers[today] = DailyAnswerEntry(questionId: q.id, answer: value);
+
+      return prev.copyWith(
+        dailyAnswers: answers,
+        strike: StrikeState(current: nextStrike, lastAnsweredDate: today),
+      );
+    });
+    if (!mounted) return;
+    widget.onStorageChanged(next);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -31,6 +100,10 @@ class HomeScreen extends StatelessWidget {
     final persona = storage.persona;
     final liked = storage.explore.likedRoleIds;
     final swiped = liked.length + storage.explore.dislikedRoleIds.length;
+
+    final today = toLocalDateString();
+    final question = _pickQuestion(today);
+    final answeredToday = storage.dailyAnswers[today];
 
     return CupertinoPageScaffold(
       backgroundColor: AppColors.bg,
@@ -42,6 +115,10 @@ class HomeScreen extends StatelessWidget {
             AppGaps.h16,
             _heroCard(persona, liked, swiped),
             AppGaps.h14,
+            if (question != null) ...[
+              _dailySection(question, answeredToday),
+              AppGaps.h14,
+            ],
             _statsRow(swiped, liked.length),
             AppGaps.h14,
             _featureGrid(),
@@ -52,6 +129,52 @@ class HomeScreen extends StatelessWidget {
               _likedRolesPreview(liked),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _dailySection(DailyQuestion q, DailyAnswerEntry? answered) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadii.lg),
+        boxShadow: AppColors.shadowSoft,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(CupertinoIcons.flame_fill,
+                  size: 14, color: AppColors.brandStart),
+              AppGaps.w6,
+              const Text(
+                '每日一題',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.4,
+                  color: AppColors.brandStart,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                answered != null ? '已答 ・ streak ${storage.strike.current}' : '答完 +1 streak',
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: AppColors.textTertiary,
+                ),
+              ),
+            ],
+          ),
+          AppGaps.h10,
+          DailyQuestionCard(
+            question: q,
+            answered: answered,
+            onAnswer: (v) => _answer(q, v),
+          ),
+        ],
       ),
     );
   }
@@ -236,7 +359,7 @@ class HomeScreen extends StatelessWidget {
                       ? const Color(0xFFFE8A4F)
                       : AppColors.brandStart,
                   borderRadius: BorderRadius.circular(AppRadii.md),
-                  onPressed: onOpenPersona,
+                  onPressed: widget.onOpenPersona,
                   child: Text(
                     hasPersona ? '查看 Persona' : '建立 Persona',
                     style: const TextStyle(
@@ -252,7 +375,7 @@ class HomeScreen extends StatelessWidget {
                   padding: const EdgeInsets.symmetric(vertical: 12),
                   color: AppColors.surface,
                   borderRadius: BorderRadius.circular(AppRadii.md),
-                  onPressed: onStartExplore,
+                  onPressed: widget.onStartExplore,
                   child: const Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
@@ -385,25 +508,25 @@ class HomeScreen extends StatelessWidget {
               icon: CupertinoIcons.flame_fill,
               title: '創業 To-do',
               subtitle: '驗證、資源、申請補助',
-              onTap: onOpenPlan,
+              onTap: widget.onOpenPlan,
             ),
             _FeatureEntry(
               icon: CupertinoIcons.chat_bubble_2_fill,
               title: '創業 AI 諮詢',
               subtitle: '帶有導師交接單的對話',
-              onTap: onOpenChat,
+              onTap: widget.onOpenChat,
             ),
             _FeatureEntry(
               icon: CupertinoIcons.text_badge_plus,
               title: '技能翻譯',
               subtitle: '把經驗變履歷句子',
-              onTap: onOpenSkillTranslator,
+              onTap: widget.onOpenSkillTranslator,
             ),
             _FeatureEntry(
               icon: CupertinoIcons.person_crop_circle_fill,
               title: '創業 Persona',
               subtitle: '可編輯的創業者輪廓',
-              onTap: onOpenPersona,
+              onTap: widget.onOpenPersona,
             ),
           ]
         : [
@@ -411,25 +534,25 @@ class HomeScreen extends StatelessWidget {
               icon: CupertinoIcons.text_badge_plus,
               title: '技能翻譯',
               subtitle: '把生活經驗變履歷',
-              onTap: onOpenSkillTranslator,
+              onTap: widget.onOpenSkillTranslator,
             ),
             _FeatureEntry(
               icon: CupertinoIcons.doc_text_fill,
               title: '行動計畫',
               subtitle: '4–8 週路線圖',
-              onTap: onOpenPlan,
+              onTap: widget.onOpenPlan,
             ),
             _FeatureEntry(
               icon: CupertinoIcons.chat_bubble_2_fill,
               title: 'AI 諮詢',
               subtitle: '帶有交接單的對話',
-              onTap: onOpenChat,
+              onTap: widget.onOpenChat,
             ),
             _FeatureEntry(
               icon: CupertinoIcons.person_crop_circle_fill,
               title: 'Persona',
               subtitle: '你的可編輯輪廓',
-              onTap: onOpenPersona,
+              onTap: widget.onOpenPersona,
             ),
           ];
     return Column(
