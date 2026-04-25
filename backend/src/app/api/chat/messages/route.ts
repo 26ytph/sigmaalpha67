@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import { withAuth, readJson } from "@/lib/route";
 import { apiError } from "@/lib/errors";
-import { store, newId } from "@/lib/store";
+import { store } from "@/lib/store";
+import * as db from "@/lib/db";
 import { generateChatReply } from "@/engines/chatReply";
 import {
   generateGeneralChatReply,
@@ -46,10 +48,25 @@ export const POST = withAuth(async (req, { auth }) => {
     );
   }
 
-  const convId = body.conversationId ?? newId("c");
+  // 用 client 帶來的 id；沒有就用 UUID（Supabase chat_conversations.id 是 uuid）
+  const convId = body.conversationId ?? randomUUID();
   const now = new Date().toISOString();
-  const conv: ChatConversation =
-    store.conversations.get(convId) ?? {
+
+  // 1) 先看 in-memory store
+  let conv: ChatConversation | undefined = store.conversations.get(convId);
+
+  // 2) Cold start / 換 device：本機沒有但 client 帶了 id 過來 → 從 Supabase 把整段歷史撈回來
+  if (!conv && body.conversationId) {
+    const remote = await db.fetchConversationMessages(auth.userId, convId);
+    if (remote) {
+      conv = remote;
+      store.conversations.set(convId, conv);
+    }
+  }
+
+  // 3) 真的找不到就建一個新的
+  if (!conv) {
+    conv = {
       id: convId,
       userId: auth.userId,
       mode,
@@ -57,15 +74,23 @@ export const POST = withAuth(async (req, { auth }) => {
       createdAt: now,
       updatedAt: now,
     };
-  if (conv.userId !== auth.userId) return apiError("not_found", "Conversation not found.");
+  }
+  if (conv.userId !== auth.userId) {
+    return apiError("not_found", "Conversation not found.");
+  }
+
+  // 確保 Supabase 有這筆對話 row（首次訊息時建立）
+  await db.upsertConversation(auth.userId, convId, mode, conv.createdAt);
 
   const userMsg: ChatMessage = {
-    id: newId("m"),
+    id: randomUUID(),
     role: "user",
     text: body.message,
     createdAt: now,
   };
   conv.messages.push(userMsg);
+  // 把 user 的訊息寫進 Supabase
+  await db.insertChatMessage(auth.userId, convId, userMsg);
 
   const profile = body.context?.useProfile === false ? null : store.profiles.get(auth.userId) ?? null;
   const persona = store.personas.get(auth.userId) ?? null;
@@ -95,7 +120,7 @@ export const POST = withAuth(async (req, { auth }) => {
   const cached = getCachedReply<CachedPayload>(cacheKey);
   if (cached) {
     const replyMsg: ChatMessage = {
-      id: newId("m"),
+      id: randomUUID(),
       role: "assistant",
       text: cached.reply,
       createdAt: new Date().toISOString(),
@@ -103,6 +128,9 @@ export const POST = withAuth(async (req, { auth }) => {
     conv.messages.push(replyMsg);
     conv.updatedAt = replyMsg.createdAt;
     store.conversations.set(convId, conv);
+    await db.insertChatMessage(auth.userId, convId, replyMsg, {
+      askedHandoff: cached.shouldHandoff,
+    });
     return NextResponse.json({
       conversationId: convId,
       messageId: replyMsg.id,
@@ -163,7 +191,7 @@ export const POST = withAuth(async (req, { auth }) => {
       ? "gemini"
       : "local";
   const replyMsg: ChatMessage = {
-    id: newId("m"),
+    id: randomUUID(),
     role: "assistant",
     text: reply,
     createdAt: new Date().toISOString(),
@@ -171,6 +199,9 @@ export const POST = withAuth(async (req, { auth }) => {
   conv.messages.push(replyMsg);
   conv.updatedAt = replyMsg.createdAt;
   store.conversations.set(convId, conv);
+  await db.insertChatMessage(auth.userId, convId, replyMsg, {
+    askedHandoff: shouldHandoff,
+  });
 
   const ragPayload = ragResult
     ? {

@@ -58,7 +58,56 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     _messages = [_greeting()];
-    _restoreConversationId();
+    _bootstrap();
+  }
+
+  /// 開啟 chat 時：
+  /// 1. 從本機 SharedPreferences 撈出之前用過的 conversationId
+  /// 2. 如果沒有，去後端 `GET /api/chat/conversations` 拿最新一段對話的 id
+  /// 3. 用 conversationId 去後端 `GET /api/chat/conversations/{id}/messages`
+  ///    把訊息 hydrate 進 `_messages`，這樣換裝置／清快取也看得到歷史。
+  Future<void> _bootstrap() async {
+    await _restoreConversationId();
+    var convId = _conversationId;
+
+    // 沒有本機 id → 看後端有沒有歷史對話
+    if (convId == null || convId.isEmpty) {
+      try {
+        final list = await BackendApi.listConversations();
+        if (list.isNotEmpty) {
+          convId = list.first.id;
+          unawaited(_persistConversationId(convId));
+          if (mounted) setState(() => _conversationId = convId);
+        }
+      } catch (_) {}
+    }
+
+    if (convId == null || convId.isEmpty) return;
+
+    // 有 id 就把整段歷史撈回來顯示
+    try {
+      final history = await BackendApi.fetchConversationMessages(convId);
+      if (history == null || history.messages.isEmpty || !mounted) return;
+      setState(() {
+        _messages
+          ..clear()
+          // 之前的訊息不需要重新跑 IntentNormalizer（也沒有 normalized 結果），
+          // 直接用內容渲染就好。
+          ..addAll(history.messages.map(_remoteToLocal));
+      });
+      _scrollToBottom();
+    } catch (_) {
+      // 撈不到就保留原本的 greeting，使用者體感是新對話。
+    }
+  }
+
+  ChatMessage _remoteToLocal(RemoteChatMessage m) {
+    final created = DateTime.tryParse(m.createdAt) ?? DateTime.now();
+    return ChatMessage(
+      text: m.text,
+      fromUser: m.fromUser,
+      time: created,
+    );
   }
 
   Future<void> _restoreConversationId() async {

@@ -21,6 +21,7 @@ import type { Profile } from "@/types/profile";
 import type { Persona } from "@/types/persona";
 import type { SwipeRecord } from "@/types/swipe";
 import type { SkillTranslation } from "@/types/skill";
+import type { ChatConversation, ChatMessage } from "@/types/chat";
 
 // ---------------------------------------------------------------------------
 // PROFILE
@@ -244,4 +245,116 @@ export async function upsertStrike(
     { onConflict: "user_id" },
   );
   if (error) console.warn("[db] upsertStrike failed:", error.message);
+}
+
+// ---------------------------------------------------------------------------
+// CHAT  (conversations + messages)
+// ---------------------------------------------------------------------------
+
+/** Ensure conversation row exists. Safe to call repeatedly. */
+export async function upsertConversation(
+  userId: string,
+  conversationId: string,
+  mode: "career" | "startup",
+  createdAt: string,
+) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return;
+  const { error } = await supabase.from("chat_conversations").upsert(
+    {
+      id: conversationId,
+      user_id: userId,
+      mode,
+      created_at: createdAt,
+    },
+    { onConflict: "id" },
+  );
+  if (error) console.warn("[db] upsertConversation failed:", error.message);
+}
+
+export async function insertChatMessage(
+  userId: string,
+  conversationId: string,
+  message: ChatMessage,
+  opts: { normalized?: unknown; askedHandoff?: boolean } = {},
+) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return;
+  const { error } = await supabase.from("chat_messages").insert({
+    id: message.id,
+    conversation_id: conversationId,
+    user_id: userId,
+    sender: message.role, // 'user' | 'assistant'
+    content: message.text,
+    normalized: opts.normalized ?? null,
+    asked_handoff: opts.askedHandoff === true,
+    created_at: message.createdAt,
+  });
+  if (error) console.warn("[db] insertChatMessage failed:", error.message);
+}
+
+/** List the user's conversations, newest first. */
+export async function listConversations(
+  userId: string,
+  limit = 20,
+): Promise<Array<{ id: string; mode: "career" | "startup"; createdAt: string }>> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from("chat_conversations")
+    .select("id, mode, created_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.warn("[db] listConversations failed:", error.message);
+    return [];
+  }
+  return (data ?? []).map((row) => ({
+    id: row.id as string,
+    mode: (row.mode as "career" | "startup") ?? "career",
+    createdAt: (row.created_at as string) ?? new Date().toISOString(),
+  }));
+}
+
+/** Load all messages of a conversation, oldest first (chat order). */
+export async function fetchConversationMessages(
+  userId: string,
+  conversationId: string,
+): Promise<ChatConversation | null> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+  const { data: convRow, error: convErr } = await supabase
+    .from("chat_conversations")
+    .select("id, user_id, mode, created_at")
+    .eq("id", conversationId)
+    .maybeSingle();
+  if (convErr || !convRow) return null;
+  if (convRow.user_id !== userId) return null;
+
+  const { data: msgRows, error: msgErr } = await supabase
+    .from("chat_messages")
+    .select("id, sender, content, created_at")
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: true });
+  if (msgErr) {
+    console.warn("[db] fetchConversationMessages failed:", msgErr.message);
+    return null;
+  }
+  const messages: ChatMessage[] = (msgRows ?? []).map((m) => ({
+    id: m.id as string,
+    role: (m.sender as "user" | "assistant") ?? "assistant",
+    text: (m.content as string) ?? "",
+    createdAt: (m.created_at as string) ?? new Date().toISOString(),
+  }));
+  return {
+    id: convRow.id as string,
+    userId,
+    mode: (convRow.mode as "career" | "startup") ?? "career",
+    messages,
+    createdAt: (convRow.created_at as string) ?? new Date().toISOString(),
+    updatedAt:
+      messages[messages.length - 1]?.createdAt ??
+      ((convRow.created_at as string) ?? new Date().toISOString()),
+  };
 }
