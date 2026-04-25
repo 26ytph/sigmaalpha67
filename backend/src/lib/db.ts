@@ -281,7 +281,7 @@ export async function insertChatMessage(
   userId: string,
   conversationId: string,
   message: ChatMessage,
-  opts: { normalized?: unknown; askedHandoff?: boolean } = {},
+  opts: { normalized?: unknown; askedHandoff?: boolean; byCounselor?: boolean } = {},
 ) {
   const supabase = getSupabaseAdmin();
   if (!supabase) return;
@@ -293,9 +293,30 @@ export async function insertChatMessage(
     content: message.text,
     normalized: opts.normalized ?? null,
     asked_handoff: opts.askedHandoff === true,
+    by_counselor: opts.byCounselor === true,
     created_at: message.createdAt,
   });
   if (error) console.warn("[db] insertChatMessage failed:", error.message);
+}
+
+/** 依 chat_messages.id 反查它所在的 conversation_id（限該 user 自己）。 */
+export async function findConversationIdByMessageId(
+  userId: string,
+  messageId: string,
+): Promise<string | null> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("chat_messages")
+    .select("conversation_id")
+    .eq("id", messageId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) {
+    console.warn("[db] findConversationIdByMessageId failed:", error.message);
+    return null;
+  }
+  return (data?.conversation_id as string | null) ?? null;
 }
 
 /** List the user's conversations, newest first. */
@@ -474,6 +495,10 @@ export async function insertNormalizedQuestion(
       closest_kb_title: draft.closestKbTitle ?? "",
       closest_kb_score: draft.closestKbScore ?? 0,
       threshold_used: draft.thresholdUsed ?? 0,
+      resolved: draft.resolved ?? false,
+      resolved_reason: draft.resolvedReason ?? "",
+      answer_score: draft.answerScore ?? 0,
+      closest_kb_answer: draft.closestKbAnswer ?? "",
       generated_by: draft.generatedBy ?? "",
     })
     .select("*")
@@ -526,6 +551,10 @@ function rowToStoredQuestion(row: Record<string, unknown>): StoredNormalizedQues
     closestKbTitle: (row.closest_kb_title as string) ?? "",
     closestKbScore: Number(row.closest_kb_score ?? 0),
     thresholdUsed: Number(row.threshold_used ?? 0),
+    resolved: row.resolved === true,
+    resolvedReason: (row.resolved_reason as string) ?? "",
+    answerScore: Number(row.answer_score ?? 0),
+    closestKbAnswer: (row.closest_kb_answer as string) ?? "",
     generatedBy: (row.generated_by as string) ?? "",
     createdAt:
       (row.created_at as string) ?? new Date().toISOString(),
@@ -549,7 +578,7 @@ export async function fetchConversationMessages(
 
   const { data: msgRows, error: msgErr } = await supabase
     .from("chat_messages")
-    .select("id, sender, content, created_at")
+    .select("id, sender, content, by_counselor, created_at")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: true });
   if (msgErr) {
@@ -560,6 +589,7 @@ export async function fetchConversationMessages(
     id: m.id as string,
     role: (m.sender as "user" | "assistant") ?? "assistant",
     text: (m.content as string) ?? "",
+    byCounselor: m.by_counselor === true,
     createdAt: (m.created_at as string) ?? new Date().toISOString(),
   }));
   return {

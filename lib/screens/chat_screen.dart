@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:flutter/cupertino.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../logic/counselor_brief.dart';
@@ -10,6 +11,7 @@ import '../logic/intent_normalizer.dart';
 import '../models/models.dart';
 import '../services/app_repository.dart';
 import '../services/backend_api.dart';
+import '../services/supabase_config.dart';
 import '../utils/theme.dart';
 
 class ChatMessage {
@@ -17,16 +19,23 @@ class ChatMessage {
     required this.text,
     required this.fromUser,
     required this.time,
+    this.id,
     this.normalized,
     this.askedHandoff = false,
+    this.byCounselor = false,
     this.sources = const [],
   });
 
+  /// 對應 supabase chat_messages.id (uuid)。本機 optimistic 訊息一開始是 null，
+  /// realtime 事件回來後會被 _claimOptimistic 補上 id 以便後續去重。
+  String? id;
   final String text;
   final bool fromUser;
   final DateTime time;
   final NormalizedQuestion? normalized;
   final bool askedHandoff;
+  /// 這則訊息是真人諮詢師發的（透過 case reply）。Bubble 會多一個「諮詢師」徽章。
+  final bool byCounselor;
   final List<RagSource> sources;
 }
 
@@ -50,6 +59,11 @@ class _ChatScreenState extends State<ChatScreen> {
   DateTime? _cooldownUntil;
   static const Duration _sendCooldown = Duration(milliseconds: 1500);
   static const String _convIdPrefsKey = 'employa.chat.conversationId';
+
+  // realtime 去重：已經渲染過的 chat_messages.id 都進這個 set。
+  final Set<String> _seenIds = <String>{};
+  RealtimeChannel? _msgChannel;
+  String? _subscribedConvId;
 
   bool get _onCooldown =>
       _cooldownUntil != null && DateTime.now().isBefore(_cooldownUntil!);
@@ -87,27 +101,138 @@ class _ChatScreenState extends State<ChatScreen> {
     // 有 id 就把整段歷史撈回來顯示
     try {
       final history = await BackendApi.fetchConversationMessages(convId);
-      if (history == null || history.messages.isEmpty || !mounted) return;
-      setState(() {
-        _messages
-          ..clear()
-          // 之前的訊息不需要重新跑 IntentNormalizer（也沒有 normalized 結果），
-          // 直接用內容渲染就好。
-          ..addAll(history.messages.map(_remoteToLocal));
-      });
-      _scrollToBottom();
+      if (history != null && history.messages.isNotEmpty && mounted) {
+        setState(() {
+          _messages
+            ..clear()
+            // 之前的訊息不需要重新跑 IntentNormalizer（也沒有 normalized 結果），
+            // 直接用內容渲染就好。
+            ..addAll(history.messages.map(_remoteToLocal));
+        });
+        for (final m in history.messages) {
+          _seenIds.add(m.id);
+        }
+        _scrollToBottom();
+      }
     } catch (_) {
       // 撈不到就保留原本的 greeting，使用者體感是新對話。
     }
+
+    _subscribeRealtime(convId);
   }
 
   ChatMessage _remoteToLocal(RemoteChatMessage m) {
     final created = DateTime.tryParse(m.createdAt) ?? DateTime.now();
     return ChatMessage(
+      id: m.id,
       text: m.text,
       fromUser: m.fromUser,
       time: created,
+      byCounselor: m.byCounselor,
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Realtime — 訂閱 supabase chat_messages 的 INSERT，
+  //   收到自己／別台裝置寫入的新訊息就即時刷新 chatbox。
+  // ---------------------------------------------------------------------------
+  void _subscribeRealtime(String convId) {
+    if (!SupabaseConfig.isConfigured) return;
+    if (_subscribedConvId == convId && _msgChannel != null) return;
+    _teardownRealtime();
+
+    final supa = Supabase.instance.client;
+    final channel = supa.channel('chat_messages:$convId')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.insert,
+        schema: 'public',
+        table: 'chat_messages',
+        filter: PostgresChangeFilter(
+          type: PostgresChangeFilterType.eq,
+          column: 'conversation_id',
+          value: convId,
+        ),
+        callback: (payload) => _onRealtimeInsert(payload.newRecord),
+      )
+      ..subscribe();
+
+    _msgChannel = channel;
+    _subscribedConvId = convId;
+  }
+
+  void _teardownRealtime() {
+    final ch = _msgChannel;
+    if (ch != null) {
+      try {
+        Supabase.instance.client.removeChannel(ch);
+      } catch (_) {}
+    }
+    _msgChannel = null;
+    _subscribedConvId = null;
+  }
+
+  void _onRealtimeInsert(Map<String, dynamic> row) {
+    final id = row['id'] as String?;
+    final sender = row['sender'] as String?;
+    final content = row['content'] as String?;
+    if (id == null || sender == null || content == null) return;
+    if (_seenIds.contains(id)) return;
+
+    final fromUser = sender == 'user';
+    final byCounselor = row['by_counselor'] == true;
+    final created = DateTime.tryParse(row['created_at']?.toString() ?? '') ??
+        DateTime.now();
+
+    // 嘗試把這個 id 綁到本機剛剛 optimistic 加上去的訊息上（避免 user 自己送的訊息被 dup）。
+    // 諮詢師訊息一定是 server-only — 不會有對應的 optimistic bubble，所以跳過 claim 直接 append。
+    if (!byCounselor) {
+      final claimed = _claimOptimistic(
+        id: id,
+        fromUser: fromUser,
+        content: content,
+        createdAt: created,
+      );
+      if (claimed) {
+        _seenIds.add(id);
+        return;
+      }
+    }
+
+    // 真的是新訊息（諮詢師回覆 / 另一台裝置同步過來）→ append + 滑到底。
+    if (!mounted) return;
+    setState(() {
+      _messages.add(
+        ChatMessage(
+          id: id,
+          text: content,
+          fromUser: fromUser,
+          time: created,
+          byCounselor: byCounselor,
+        ),
+      );
+    });
+    _seenIds.add(id);
+    _scrollToBottom();
+  }
+
+  bool _claimOptimistic({
+    required String id,
+    required bool fromUser,
+    required String content,
+    required DateTime createdAt,
+  }) {
+    for (var i = _messages.length - 1; i >= 0; i--) {
+      final m = _messages[i];
+      if (m.id != null) continue;
+      if (m.fromUser != fromUser) continue;
+      if (m.text != content) continue;
+      if (m.time.difference(createdAt).abs() > const Duration(seconds: 30)) {
+        continue;
+      }
+      m.id = id;
+      return true;
+    }
+    return false;
   }
 
   Future<void> _restoreConversationId() async {
@@ -141,6 +266,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _teardownRealtime();
     _controller.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -223,6 +349,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
     String reply;
     bool shouldHandoff;
+    String? assistantId;
     List<RagSource> sources = const [];
     Duration cooldown = _sendCooldown;
     try {
@@ -234,11 +361,19 @@ class _ChatScreenState extends State<ChatScreen> {
       final nextConvId = remote.conversationId ?? _conversationId;
       if (nextConvId != null && nextConvId != _conversationId) {
         unawaited(_persistConversationId(nextConvId));
+        // 第一次拿到 conversationId 之後才能訂閱 realtime channel。
+        _subscribeRealtime(nextConvId);
       }
       _conversationId = nextConvId;
       reply = remote.reply;
       sources = remote.sources;
       shouldHandoff = remote.shouldHandoff;
+      assistantId = remote.messageId;
+      // 後端回傳的 messageId 是 assistant reply 的 id；先收進 seen set，
+      // realtime 過幾百毫秒後會 echo 回來，會被直接過濾掉。
+      if (assistantId != null && assistantId.isNotEmpty) {
+        _seenIds.add(assistantId);
+      }
     } on BackendApiException catch (e) {
       if (e.isRateLimited) {
         final waitMs = e.retryAfterMs ?? 5000;
@@ -270,6 +405,7 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() {
       _messages.add(
         ChatMessage(
+          id: assistantId,
           text: reply,
           fromUser: false,
           time: DateTime.now(),
@@ -397,6 +533,7 @@ class _MessageBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final fromUser = message.fromUser;
+    final byCounselor = !fromUser && message.byCounselor;
     final align = fromUser ? Alignment.centerRight : Alignment.centerLeft;
     final radius = BorderRadius.only(
       topLeft: const Radius.circular(20),
@@ -408,9 +545,12 @@ class _MessageBubble extends StatelessWidget {
     final decoration = fromUser
         ? BoxDecoration(gradient: AppColors.brandGradient, borderRadius: radius)
         : BoxDecoration(
-            color: AppColors.surface,
+            color: byCounselor ? AppColors.bgAlt : AppColors.surface,
             borderRadius: radius,
-            border: Border.all(color: AppColors.border),
+            border: Border.all(
+              color: byCounselor ? AppColors.brandStart : AppColors.border,
+              width: byCounselor ? 1.2 : 1,
+            ),
             boxShadow: AppColors.shadowSoft,
           );
 
@@ -429,6 +569,10 @@ class _MessageBubble extends StatelessWidget {
                 ? CrossAxisAlignment.end
                 : CrossAxisAlignment.start,
             children: [
+              if (byCounselor) ...[
+                const _CounselorBadge(),
+                const SizedBox(height: 4),
+              ],
               Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 14,
@@ -453,6 +597,41 @@ class _MessageBubble extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _CounselorBadge extends StatelessWidget {
+  const _CounselorBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        gradient: AppColors.brandGradient,
+        borderRadius: BorderRadius.circular(AppRadii.pill),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            CupertinoIcons.person_2_fill,
+            size: 10,
+            color: CupertinoColors.white,
+          ),
+          SizedBox(width: 4),
+          Text(
+            '諮詢師回覆',
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.4,
+              color: CupertinoColors.white,
+            ),
+          ),
+        ],
       ),
     );
   }

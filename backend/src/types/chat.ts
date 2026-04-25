@@ -5,6 +5,8 @@ export type ChatMessage = {
   role: ChatRole;
   text: string;
   createdAt: string;
+  /** true 代表這則 'assistant' 訊息其實是真人諮詢師發的（透過 case reply）。 */
+  byCounselor?: boolean;
 };
 
 export type ChatConversation = {

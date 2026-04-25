@@ -1,26 +1,40 @@
 /**
  * Per-message question-normalisation pipeline.
  *
- *   1. similarity check against the RAG knowledge base
- *      → 命中既有 FAQ／資源 → skip（不存）
- *   2. 沒命中 → Gemini structured JSON → 標準化欄位 + tags
- *   3. 把 tags 累加進 user_insights.tags
+ *   1. 用 RAG searchKnowledge 看 KB 是否已經有相似的「問題」。
+ *   2. 若 KB 命中：
+ *      a. 如果同時拿到 LLM 的回覆，並且回覆和 KB 既有答案也夠像
+ *         → 寫入 `normalized_questions` 並標記 `resolved = true`
+ *           （給諮詢師看『這題 RAG 已經自動處理掉了』）
+ *      b. 答案不夠像 → 仍寫入但 `resolved = false`，諮詢師會看到
+ *           『KB 有相似題目但 AI 回答有偏，可能要 review』。
+ *      c. 沒拿到回覆（背景批次先跑） → 沿用舊行為跳過儲存。
+ *   3. KB 沒命中 → Gemini 整理成正規化摘要 + tags 後存入。
+ *   4. 不論是哪一條路徑，tags 都會被 append 進 user_insights.tags。
  *
- * 失敗時回到本地規則式 (intent normalizer)，確保 demo 不會空轉。
+ * Gemini 失敗時退回 local heuristic，確保 demo 不會空轉。
  */
 
-import { searchKnowledge } from "@/engines/rag";
+import { searchKnowledge, scoreTextSimilarity } from "@/engines/rag";
 import { normalizeQuestion as localNormalize } from "@/engines/intentNormalizer";
 import type { Profile } from "@/types/profile";
 import type { Persona } from "@/types/persona";
 import type { ChatMessage } from "@/types/chat";
 import type { NormalizedQuestionDraft } from "@/types/normalizedQuestion";
 
-/** 命中分數 ≥ 這個值就視為「KB 已經有相似問題」，不需要存。 */
+/** 命中分數 ≥ 這個值就視為「KB 已經有相似問題」。 */
 export const KB_SIMILARITY_THRESHOLD = 0.55;
 
+/** 答案 vs KB 答案 ≥ 這個值 → 視為「AI 已給出和 KB 一致的回答」→ 標 resolved。 */
+export const ANSWER_SIMILARITY_THRESHOLD = 0.45;
+
 export type NormalizationOutcome =
-  | { stored: false; reason: "kb_hit" | "empty"; closestKbTitle: string; closestKbScore: number }
+  | {
+      stored: false;
+      reason: "kb_hit_no_answer" | "empty";
+      closestKbTitle: string;
+      closestKbScore: number;
+    }
   | { stored: true; draft: NormalizedQuestionDraft };
 
 const SYSTEM_INSTRUCTION =
@@ -49,6 +63,10 @@ export async function processUserQuestion(opts: {
   persona?: Persona | null;
   history?: ChatMessage[];
   threshold?: number;
+  /** AI / RAG 對這題的最終回覆。提供時才會做「resolved」判定。 */
+  assistantReply?: string;
+  /** 自訂答案相似度門檻；預設 ANSWER_SIMILARITY_THRESHOLD。 */
+  answerThreshold?: number;
 }): Promise<NormalizationOutcome> {
   const text = (opts.question ?? "").trim();
   if (!text) {
@@ -56,30 +74,72 @@ export async function processUserQuestion(opts: {
   }
 
   const threshold = opts.threshold ?? KB_SIMILARITY_THRESHOLD;
+  const answerThreshold = opts.answerThreshold ?? ANSWER_SIMILARITY_THRESHOLD;
 
   // 1) 先看 RAG KB 有沒有近似的既有問答
   let closestTitle = "";
   let closestScore = 0;
+  let closestAnswerText = "";
   try {
     const hits = searchKnowledge({ query: text, topK: 1 });
     if (hits.length > 0) {
       closestTitle = hits[0].title ?? "";
       closestScore = Number(hits[0].score ?? 0);
+      closestAnswerText = (hits[0].chunkText ?? "").trim();
     }
   } catch {
     // KB 還沒 seed / 撈不到就當作沒命中
   }
 
+  const reply = (opts.assistantReply ?? "").trim();
+
+  // 2) KB 命中（相似題目已存在）
   if (closestScore >= threshold) {
-    return {
-      stored: false,
-      reason: "kb_hit",
+    // 沒拿到回覆就走舊行為：背景 pipeline 先跑、之後沒辦法判斷 resolved，先跳過。
+    if (!reply) {
+      return {
+        stored: false,
+        reason: "kb_hit_no_answer",
+        closestKbTitle: closestTitle,
+        closestKbScore: closestScore,
+      };
+    }
+
+    const answerScore = closestAnswerText
+      ? scoreTextSimilarity(reply, closestAnswerText)
+      : 0;
+    const resolved = answerScore >= answerThreshold;
+
+    // 命中時跳過 Gemini 整理（多花 token 沒意義），用 heuristic 補欄位即可。
+    const body = buildHeuristic(text, opts.profile ?? null);
+    if (resolved && !body.tags.includes("已解決")) body.tags.push("已解決");
+
+    const draft: NormalizedQuestionDraft = {
+      rawQuestion: text,
+      normalizedText: body.normalizedText,
+      intents: body.intents,
+      emotion: body.emotion,
+      knownInfo: body.knownInfo,
+      missingInfo: body.missingInfo,
+      urgency: body.urgency,
+      counselorSummary: body.counselorSummary,
+      tags: body.tags,
+      noveltyScore: clamp01(1 - closestScore),
       closestKbTitle: closestTitle,
       closestKbScore: closestScore,
+      thresholdUsed: threshold,
+      resolved,
+      resolvedReason: resolved
+        ? `KB 命中（${closestScore.toFixed(2)}）+ 回答近似（${answerScore.toFixed(2)}）`
+        : `KB 命中（${closestScore.toFixed(2)}）但回答近似度只有 ${answerScore.toFixed(2)}`,
+      answerScore,
+      closestKbAnswer: closestAnswerText.slice(0, 600),
+      generatedBy: "kb_hit_heuristic",
     };
+    return { stored: true, draft };
   }
 
-  // 2) 沒命中 → 整理成正規化摘要
+  // 3) KB 沒命中 → Gemini 整理成正規化摘要
   const fromGemini = await tryGemini({
     question: text,
     profile: opts.profile ?? null,
@@ -111,6 +171,10 @@ export async function processUserQuestion(opts: {
     closestKbTitle: closestTitle,
     closestKbScore: closestScore,
     thresholdUsed: threshold,
+    resolved: false,
+    resolvedReason: "",
+    answerScore: 0,
+    closestKbAnswer: "",
     generatedBy,
   };
   return { stored: true, draft };
