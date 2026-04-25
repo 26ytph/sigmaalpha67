@@ -10,6 +10,7 @@ import {
   lastGeminiChatError,
 } from "@/engines/geminiChat";
 import { answerRagQuery, shouldUseRag } from "@/engines/rag";
+import { generateUserInsight } from "@/engines/userInsight";
 import {
   buildChatCacheKey,
   checkRate,
@@ -203,6 +204,13 @@ export const POST = withAuth(async (req, { auth }) => {
     askedHandoff: shouldHandoff,
   });
 
+  // —— 每 4 則使用者訊息（即每 8 則 total）就 fire-and-forget 重算一次 insight ——
+  //    或者：這次被標 shouldHandoff 也立刻重算（諮詢師可能要看了）。
+  const userTurns = conv.messages.filter((m) => m.role === "user").length;
+  if (userTurns > 0 && (userTurns % 4 === 0 || shouldHandoff)) {
+    refreshInsightInBackground(auth.userId, conv.messages);
+  }
+
   const ragPayload = ragResult
     ? {
         provider: ragResult.provider,
@@ -239,3 +247,27 @@ export const POST = withAuth(async (req, { auth }) => {
       chatProvider === "local" && !ragResult ? lastGeminiChatError.value : null,
   });
 });
+
+/**
+ * 不 await — 讓 chat 回覆先送回 client，背景再算 insight。
+ * 失敗只 log，不影響使用者體感。
+ */
+function refreshInsightInBackground(
+  userId: string,
+  messages: import("@/types/chat").ChatMessage[],
+) {
+  void (async () => {
+    try {
+      const profile = store.profiles.get(userId) ?? null;
+      const persona = store.personas.get(userId) ?? null;
+      const draft = await generateUserInsight({
+        profile,
+        persona,
+        messages,
+      });
+      await db.upsertUserInsight(userId, draft);
+    } catch (err) {
+      console.warn("[insight] background refresh failed:", err);
+    }
+  })();
+}

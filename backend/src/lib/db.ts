@@ -22,6 +22,7 @@ import type { Persona } from "@/types/persona";
 import type { SwipeRecord } from "@/types/swipe";
 import type { SkillTranslation } from "@/types/skill";
 import type { ChatConversation, ChatMessage } from "@/types/chat";
+import type { UserInsight, UserInsightDraft } from "@/types/insight";
 
 // ---------------------------------------------------------------------------
 // PROFILE
@@ -315,6 +316,93 @@ export async function listConversations(
     mode: (row.mode as "career" | "startup") ?? "career",
     createdAt: (row.created_at as string) ?? new Date().toISOString(),
   }));
+}
+
+// ---------------------------------------------------------------------------
+// USER INSIGHTS  (rolling AI-generated profile for counselors)
+// ---------------------------------------------------------------------------
+
+/** Upsert AI-extracted insight for a user. */
+export async function upsertUserInsight(
+  userId: string,
+  draft: UserInsightDraft,
+) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return;
+  const now = new Date().toISOString();
+  const { error } = await supabase.from("user_insights").upsert(
+    {
+      user_id: userId,
+      problem_positioning: draft.problemPositioning ?? "",
+      categories: draft.categories ?? [],
+      emotion_profile: draft.emotionProfile ?? "",
+      specific_concerns: draft.specificConcerns ?? [],
+      tried_approaches: draft.triedApproaches ?? [],
+      blockers: draft.blockers ?? [],
+      recommended_topics: draft.recommendedTopics ?? [],
+      priority: draft.priority ?? "中",
+      tags: draft.tags ?? [],
+      raw_summary: draft.rawSummary ?? "",
+      message_count: draft.messageCount ?? 0,
+      generated_by: draft.generatedBy ?? "",
+      generated_at: now,
+    },
+    { onConflict: "user_id" },
+  );
+  if (error) console.warn("[db] upsertUserInsight failed:", error.message);
+}
+
+/** Fetch the latest insight for a user. Returns null when none / Supabase off. */
+export async function fetchUserInsight(
+  userId: string,
+): Promise<UserInsight | null> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("user_insights")
+    .select("*")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error || !data) return null;
+  return {
+    userId: data.user_id as string,
+    problemPositioning: (data.problem_positioning as string) ?? "",
+    categories: Array.isArray(data.categories) ? data.categories : [],
+    emotionProfile: (data.emotion_profile as string) ?? "",
+    specificConcerns: Array.isArray(data.specific_concerns)
+      ? data.specific_concerns
+      : [],
+    triedApproaches: Array.isArray(data.tried_approaches)
+      ? data.tried_approaches
+      : [],
+    blockers: Array.isArray(data.blockers) ? data.blockers : [],
+    recommendedTopics: Array.isArray(data.recommended_topics)
+      ? data.recommended_topics
+      : [],
+    priority: (data.priority as UserInsight["priority"]) ?? "中",
+    tags: Array.isArray(data.tags) ? data.tags : [],
+    rawSummary: (data.raw_summary as string) ?? "",
+    messageCount: (data.message_count as number) ?? 0,
+    generatedBy: (data.generated_by as string) ?? "",
+    counselorNote: (data.counselor_note as string) ?? "",
+    generatedAt: (data.generated_at as string) ?? new Date(0).toISOString(),
+    updatedAt: (data.updated_at as string) ?? new Date(0).toISOString(),
+  };
+}
+
+/** Update only the counselor_note on an existing row. */
+export async function updateInsightCounselorNote(
+  userId: string,
+  note: string,
+) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return;
+  const { error } = await supabase
+    .from("user_insights")
+    .update({ counselor_note: note })
+    .eq("user_id", userId);
+  if (error)
+    console.warn("[db] updateInsightCounselorNote failed:", error.message);
 }
 
 /** Load all messages of a conversation, oldest first (chat order). */
