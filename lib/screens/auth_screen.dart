@@ -86,9 +86,19 @@ class _AuthScreenState extends State<AuthScreen> {
       email: resolvedEmail,
       signedInAt: DateTime.now().toIso8601String(),
     );
-    final next = await AppRepository.update(
+    var next = await AppRepository.update(
       (prev) => prev.copyWith(account: acc),
     );
+    // 登入成功後去後端撈既有 profile / persona —— 如果這個 user 之前
+    // 已經 onboard 過，下次登入就不會被擋在 OnboardingScreen 重填一次。
+    try {
+      next = await AppRepository.hydrateFromBackend();
+      // hydrateFromBackend 會覆寫 account（因為 load 是讀本機的最新值），
+      // 所以這裡再保險一次寫進當前登入 email。
+      next = await AppRepository.update(
+        (prev) => prev.copyWith(account: acc),
+      );
+    } catch (_) {}
     if (!mounted) return;
     setState(() => _busy = false);
     widget.onSignedIn(next);
