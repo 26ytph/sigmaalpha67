@@ -703,9 +703,10 @@ async function generateWithGemini(opts: {
   const primaryModel = process.env.GEMINI_MODEL || "gemini-2.5-flash";
   const fallbackModel =
     process.env.GEMINI_FALLBACK_MODEL || "gemini-2.5-flash-lite";
-  // 第三層 fallback：gemini-2.0-flash 用獨立的 quota 池，2.5 系列爆配額時撐住 demo。
+  // 第三層 fallback：用 google 官方的 latest alias，幫我們在 model 退場時自動換到下一代。
+  // （原本指 gemini-2.0-flash，但 2.0 系列已對新用戶停用、會 404。）
   const fallbackModel2 =
-    process.env.GEMINI_FALLBACK_MODEL_2 || "gemini-2.0-flash";
+    process.env.GEMINI_FALLBACK_MODEL_2 || "gemini-flash-latest";
   const modelsToTry = Array.from(
     new Set([primaryModel, fallbackModel, fallbackModel2]),
   );
@@ -802,15 +803,12 @@ async function generateWithGemini(opts: {
         ?.map((part) => part.text ?? "")
         .join("")
         .trim();
-      if (
-        text &&
-        isAnswerLinkGrounded(text, opts.retrievedChunks) &&
-        isLikelyCompleteAnswer(text)
-      ) {
-        return text;
-      }
       if (text) {
-        console.warn(`[rag.gemini] [${model}] rejected ungrounded or incomplete output`);
+        // 把 markdown link 裡那些不在 retrievedChunks 的網址直接抹掉純文字保留 —
+        //   寬容 Gemini 偶爾會多塞網址（例如 trailing slash 不一致、連到首頁），
+        //   不要因為這個小細節整個丟掉好回答。
+        const sanitized = stripUngroundedLinks(text, opts.retrievedChunks);
+        return sanitized;
       }
     } catch (err) {
       console.error(`[rag.gemini] [${model}] threw:`, err);
@@ -820,18 +818,35 @@ async function generateWithGemini(opts: {
   return null;
 }
 
-function isAnswerLinkGrounded(answer: string, chunks: RetrievedKnowledgeChunk[]): boolean {
-  const allowedUrls = new Set(chunks.map((chunk) => chunk.sourceUrl).filter(Boolean));
-  const markdownUrls = [...answer.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)].map((match) => match[1].trim());
-  if (!markdownUrls.every((url) => allowedUrls.has(url))) return false;
-
-  const urls = answer.match(/https?:\/\/[^\s)\]，。；;]+/g) ?? [];
-
-  return urls.every((url) => allowedUrls.has(url));
+/**
+ * 把 [文字](url) 裡 url 不在 retrievedChunks.sourceUrl 的那些連結降級成純文字。
+ * 保留答案本體，避免因為一個多餘 / 失準的連結就整段被丟掉。
+ * URL 比對先做寬鬆 normalize（去掉 trailing /、忽略 query/fragment）。
+ */
+function stripUngroundedLinks(
+  answer: string,
+  chunks: RetrievedKnowledgeChunk[],
+): string {
+  const allowed = new Set(
+    chunks
+      .map((c) => normalizeUrl(c.sourceUrl ?? ""))
+      .filter((u) => u.length > 0),
+  );
+  return answer.replace(
+    /\[([^\]]+)\]\(([^)]+)\)/g,
+    (match, label: string, url: string) => {
+      const ok = allowed.has(normalizeUrl(url.trim()));
+      return ok ? match : label;
+    },
+  );
 }
 
-function isLikelyCompleteAnswer(answer: string): boolean {
-  return /[。！？!?）)]$/.test(answer.trim());
+function normalizeUrl(url: string): string {
+  return url
+    .trim()
+    .toLowerCase()
+    .replace(/[#?].*$/, "")
+    .replace(/\/+$/, "");
 }
 
 function buildLocalAnswer(opts: {

@@ -35,6 +35,8 @@ class RemoteChatMessage {
     required this.text,
     required this.createdAt,
     this.byCounselor = false,
+    this.replyToMessageId,
+    this.replyToText,
   });
 
   final String id;
@@ -42,6 +44,10 @@ class RemoteChatMessage {
   final String text;
   final String createdAt;
   final bool byCounselor;
+  /// 諮詢師回覆專用：這則回覆對應 user 的哪一則問題（chat_messages.id）。
+  final String? replyToMessageId;
+  /// 諮詢師回覆專用：對應問題的文字快照（顯示在 bubble 上方的 ↩ 引用框）。
+  final String? replyToText;
 
   bool get fromUser => role == 'user';
 }
@@ -339,7 +345,11 @@ class BackendApi {
                 role: (mm['role'] as String?) ?? 'assistant',
                 text: (mm['text'] as String?) ?? '',
                 createdAt: (mm['createdAt'] as String?) ?? '',
-                byCounselor: mm['byCounselor'] == true,
+                // 後端 type 用 fromCounselor，舊 client 讀 byCounselor — 兩個都接，相容。
+                byCounselor:
+                    mm['byCounselor'] == true || mm['fromCounselor'] == true,
+                replyToMessageId: mm['replyToMessageId'] as String?,
+                replyToText: mm['replyToText'] as String?,
               ),
             );
           }

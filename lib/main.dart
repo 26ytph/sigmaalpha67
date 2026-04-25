@@ -164,8 +164,9 @@ class _AppShellState extends State<AppShell> {
             ),
           ),
           CupertinoTabBar(
-            backgroundColor:
-                CupertinoColors.systemBackground.resolveFrom(context),
+            backgroundColor: CupertinoColors.systemBackground.resolveFrom(
+              context,
+            ),
             currentIndex: _tabIndex,
             onTap: _goTo,
             activeColor: AppColors.brandStart,
@@ -197,4 +198,3 @@ class _AppShellState extends State<AppShell> {
     );
   }
 }
-

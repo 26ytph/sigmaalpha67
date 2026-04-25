@@ -10,8 +10,6 @@ import '../utils/theme.dart';
 import '../widgets/explore_photo_card.dart';
 import '../widgets/swipe_card.dart';
 
-const _promptEvery = 10;
-
 class ExploreScreen extends StatefulWidget {
   const ExploreScreen({
     super.key,
@@ -35,10 +33,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
   // 我們可以偵測並重洗。
   late bool _deckIsStartup;
 
-  // 累積到下次 prompt 還差幾張（重啟 session 重置，避免 app 重開時被舊計數困住）
-  int _sinceLastPrompt = 0;
-  bool _promptOpen = false;
-
   bool get _isStartup => widget.storage.profile.startupInterest;
 
   List<CareerRole> _sourceDeck() => _isStartup ? startupSkills : roles;
@@ -58,7 +52,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
       setState(() {
         _deckIsStartup = _isStartup;
         _deckIdx = 0;
-        _sinceLastPrompt = 0;
         _deck = [..._sourceDeck()]..shuffle();
       });
     }
@@ -107,48 +100,11 @@ class _ExploreScreenState extends State<ExploreScreen> {
 
     setState(() {
       _deckIdx++;
-      _sinceLastPrompt++;
       // 卡組用完一輪重新洗牌，達成「無限滑卡」
       if (_deckIdx % _deck.length == 0) {
         _deck = [..._sourceDeck()]..shuffle();
       }
     });
-
-    if (_sinceLastPrompt >= _promptEvery && !_promptOpen) {
-      _askForUpdate();
-    }
-  }
-
-  Future<void> _askForUpdate() async {
-    _promptOpen = true;
-    final yes = await showCupertinoDialog<bool>(
-      context: context,
-      builder: (ctx) => CupertinoAlertDialog(
-        title: const Text('要更新興趣與計畫嗎？'),
-        content: Text(
-          '你已經滑了 $_sinceLastPrompt 張卡。要根據新的喜好重新整理 Persona 的興趣方向，'
-          '並讓「計畫」更貼近你最近的選擇嗎？',
-        ),
-        actions: [
-          CupertinoDialogAction(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('稍後再說'),
-          ),
-          CupertinoDialogAction(
-            isDefaultAction: true,
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('現在更新'),
-          ),
-        ],
-      ),
-    );
-    _promptOpen = false;
-    setState(() => _sinceLastPrompt = 0);
-
-    if (yes != true) return;
-    final next = await AppRepository.refreshPersonaFromBackend();
-    if (!mounted) return;
-    widget.onStorageChanged(next);
   }
 
   Future<void> _resetExplore() async {
@@ -178,7 +134,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
     );
     setState(() {
       _deckIdx = 0;
-      _sinceLastPrompt = 0;
       _deck = [..._sourceDeck()]..shuffle();
     });
   }
@@ -187,7 +142,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
   Widget build(BuildContext context) {
     final likedCount = widget.storage.explore.likedRoleIds.length;
     final totalSwipes = widget.storage.explore.swipeCount;
-    final towardNext = _promptEvery - _sinceLastPrompt;
 
     return CupertinoPageScaffold(
       backgroundColor: AppColors.bg,
@@ -256,37 +210,9 @@ class _ExploreScreenState extends State<ExploreScreen> {
                               ),
                             ],
                           ),
-                          AppGaps.h2,
-                          Text(
-                            '再滑 $towardNext 張更新建議',
-                            style: const TextStyle(
-                              fontSize: 11,
-                              color: AppColors.textTertiary,
-                            ),
-                          ),
                         ],
                       ),
                     ],
-                  ),
-                  AppGaps.h12,
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(AppRadii.pill),
-                    child: SizedBox(
-                      height: 4,
-                      child: Stack(
-                        children: [
-                          const ColoredBox(color: AppColors.border),
-                          FractionallySizedBox(
-                            widthFactor: _sinceLastPrompt / _promptEvery,
-                            child: const DecoratedBox(
-                              decoration: BoxDecoration(
-                                gradient: AppColors.brandGradient,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
                   ),
                 ],
               ),

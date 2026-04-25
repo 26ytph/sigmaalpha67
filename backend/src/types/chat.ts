@@ -12,6 +12,14 @@ export type ChatMessage = {
    * （normalized_questions.resolved=true），諮詢師端會淡化此 Q + 後續 AI 回覆。
    */
   resolved?: boolean;
+  /**
+   * 諮詢師回覆專用：這則訊息對應 user 的哪一則問題（chat_messages.id）。
+   * UI 上會在 bubble 上方掛一個 ↩ 引用框，避免被後續訊息擠到上面去之後 user 看不懂回覆給誰。
+   */
+  replyToMessageId?: string;
+  replyToText?: string;
+  /** 諮詢師回覆專用：這則訊息屬於哪個 question_topics 主題（給後端做關聯，UI 不一定渲染）。 */
+  topicId?: string;
 };
 
 export type ChatConversation = {

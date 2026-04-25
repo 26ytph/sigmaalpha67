@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { colors, radii, gradients, shadows, fontStack } from "../theme";
 import { apiFetch, clearSession, getToken } from "../lib/api";
+import { getSupabaseBrowser } from "../lib/supabaseBrowser";
 import { Header } from "../components/Header";
 
 type CounselorUser = {
@@ -22,10 +23,41 @@ type RemoteMessage = {
   resolved?: boolean;
 };
 
-type ConversationResponse = {
+type StoredTopic = {
+  id: string;
+  userId: string;
+  title: string;
+  summary: string;
+  status: "pending" | "resolved";
+  questionCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type TopicMember = {
+  normalizedQuestionId: string;
+  messageId: string | null;
   conversationId: string | null;
-  mode: "career" | "startup";
-  messages: RemoteMessage[];
+  rawQuestion: string;
+  normalizedText: string;
+  intents: string[];
+  emotion: string;
+  urgency: string;
+  createdAt: string;
+};
+
+type TopicCounselorReply = {
+  messageId: string;
+  conversationId: string;
+  text: string;
+  createdAt: string;
+  replyToMessageId?: string;
+  replyToText?: string;
+};
+
+type TopicWithMembers = StoredTopic & {
+  members: TopicMember[];
+  counselorReplies: TopicCounselorReply[];
 };
 
 type UserInsight = {
@@ -56,9 +88,15 @@ export default function CounselorChatPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
 
-  const [conv, setConv] = useState<ConversationResponse | null>(null);
-  const [convLoading, setConvLoading] = useState(false);
-  const [convError, setConvError] = useState<string | null>(null);
+  // 中欄改為「主題卡」流：先列出 topics，點擊後看詳情。
+  const [topics, setTopics] = useState<StoredTopic[]>([]);
+  const [topicsLoading, setTopicsLoading] = useState(false);
+  const [topicsError, setTopicsError] = useState<string | null>(null);
+
+  const [selectedTopicId, setSelectedTopicId] = useState<string | null>(null);
+  const [topicDetail, setTopicDetail] = useState<TopicWithMembers | null>(null);
+  const [topicDetailLoading, setTopicDetailLoading] = useState(false);
+  const [topicDetailError, setTopicDetailError] = useState<string | null>(null);
 
   const [insight, setInsight] = useState<UserInsight | null>(null);
   const [insightLoading, setInsightLoading] = useState(false);
@@ -67,10 +105,13 @@ export default function CounselorChatPage() {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [resolving, setResolving] = useState(false);
+  const [resolveError, setResolveError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const selectedIdRef = useRef<string | null>(null);
   selectedIdRef.current = selectedId;
-  const messagesScrollRef = useRef<HTMLDivElement | null>(null);
+  const selectedTopicIdRef = useRef<string | null>(null);
+  selectedTopicIdRef.current = selectedTopicId;
 
   useEffect(() => {
     if (!getToken()) {
@@ -104,30 +145,35 @@ export default function CounselorChatPage() {
     })();
   }, [router]);
 
-  // 拉某個 user 的對話 + AI 摘要。
-  // mode='full' 是切換個案／第一次載入時用，會清空舊資料、顯示 loading；
-  // mode='silent' 是輪詢／按下重新整理時用，不會閃畫面。
+  // 拉某個 user 的 topics + AI 摘要。
+  //   - mode='full'：切個案／第一次載入。清空、顯示 loading。
+  //   - mode='silent'：輪詢。不閃 UI。
+  // 如果同時有打開的 topic，也順手 refresh detail。
   const loadFor = useCallback(
     async (userId: string, mode: "full" | "silent") => {
       if (mode === "full") {
-        setConvLoading(true);
-        setConvError(null);
+        setTopicsLoading(true);
+        setTopicsError(null);
         setInsightLoading(true);
         setInsightError(null);
-        setConv(null);
+        setTopics([]);
         setInsight(null);
       } else {
         setRefreshing(true);
       }
 
-      const convPromise = apiFetch<ConversationResponse>(
-        `/api/counselor/users/${encodeURIComponent(userId)}/conversation`,
+      const topicsPromise = apiFetch<{ topics: StoredTopic[] }>(
+        `/api/counselor/users/${encodeURIComponent(userId)}/topics?status=all`,
       )
         .then((r) => {
-          // 如果使用者在這個 await 期間切換了個案，丟棄結果
           if (selectedIdRef.current !== userId) return;
-          setConv(r);
-          setConvError(null);
+          // 待處理優先；已解決排到下方並用灰色顯示
+          const sorted = [...(r.topics ?? [])].sort((a, b) => {
+            if (a.status !== b.status) return a.status === "pending" ? -1 : 1;
+            return (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
+          });
+          setTopics(sorted);
+          setTopicsError(null);
         })
         .catch((e) => {
           if (selectedIdRef.current !== userId) return;
@@ -135,7 +181,7 @@ export default function CounselorChatPage() {
             typeof e === "object" && e && "message" in e
               ? String((e as { message?: string }).message ?? "")
               : "";
-          setConvError(msg || "載入對話失敗");
+          setTopicsError(msg || "載入主題列表失敗");
         });
 
       const insightPromise = apiFetch<{ insight: UserInsight | null }>(
@@ -155,10 +201,30 @@ export default function CounselorChatPage() {
           setInsightError(msg || "載入摘要失敗");
         });
 
-      await Promise.all([convPromise, insightPromise]);
+      const detailPromise = (async () => {
+        const tid = selectedTopicIdRef.current;
+        if (!tid) return;
+        try {
+          const r = await apiFetch<{ topic: TopicWithMembers }>(
+            `/api/counselor/topics/${encodeURIComponent(tid)}`,
+          );
+          if (selectedTopicIdRef.current !== tid) return;
+          setTopicDetail(r.topic);
+          setTopicDetailError(null);
+        } catch (e) {
+          if (selectedTopicIdRef.current !== tid) return;
+          const msg =
+            typeof e === "object" && e && "message" in e
+              ? String((e as { message?: string }).message ?? "")
+              : "";
+          setTopicDetailError(msg || "載入主題詳情失敗");
+        }
+      })();
+
+      await Promise.all([topicsPromise, insightPromise, detailPromise]);
 
       if (mode === "full") {
-        setConvLoading(false);
+        setTopicsLoading(false);
         setInsightLoading(false);
       } else {
         setRefreshing(false);
@@ -167,19 +233,53 @@ export default function CounselorChatPage() {
     [],
   );
 
-  // 切換個案：full reload
+  // 顯式打開某個 topic 的詳情（卡片點擊用）。
+  const openTopic = useCallback(async (topicId: string) => {
+    setSelectedTopicId(topicId);
+    setTopicDetailLoading(true);
+    setTopicDetailError(null);
+    setTopicDetail(null);
+    setDraft("");
+    setSendError(null);
+    setResolveError(null);
+    try {
+      const r = await apiFetch<{ topic: TopicWithMembers }>(
+        `/api/counselor/topics/${encodeURIComponent(topicId)}`,
+      );
+      if (selectedTopicIdRef.current !== topicId) return;
+      setTopicDetail(r.topic);
+    } catch (e) {
+      if (selectedTopicIdRef.current !== topicId) return;
+      const msg =
+        typeof e === "object" && e && "message" in e
+          ? String((e as { message?: string }).message ?? "")
+          : "";
+      setTopicDetailError(msg || "載入主題詳情失敗");
+    } finally {
+      if (selectedTopicIdRef.current === topicId) {
+        setTopicDetailLoading(false);
+      }
+    }
+  }, []);
+
+  // 切換個案：full reload + 清掉打開的 topic
   useEffect(() => {
     if (!selectedId) {
-      setConv(null);
+      setTopics([]);
+      setSelectedTopicId(null);
+      setTopicDetail(null);
       setInsight(null);
       return;
     }
+    setSelectedTopicId(null);
+    setTopicDetail(null);
     setDraft("");
     setSendError(null);
+    setResolveError(null);
     void loadFor(selectedId, "full");
   }, [selectedId, loadFor]);
 
-  // 自動輪詢：每 5 秒拉一次新訊息（只在有選個案、頁面可見時執行）
+  // 自動輪詢：每 5 秒拉一次（只在有選個案、頁面可見時執行）
   useEffect(() => {
     if (!selectedId) return;
     let timer: ReturnType<typeof setInterval> | null = null;
@@ -201,7 +301,6 @@ export default function CounselorChatPage() {
     start();
     const onVis = () => {
       if (document.visibilityState === "visible") {
-        // tab 切回來時立刻 refresh 一次
         const sid = selectedIdRef.current;
         if (sid) void loadFor(sid, "silent");
       }
@@ -213,32 +312,33 @@ export default function CounselorChatPage() {
     };
   }, [selectedId, loadFor]);
 
-  // 自動把對話捲到底：
-  //   - 第一次載入 / 切換個案：強制捲到底（不檢查使用者位置）
-  //   - 後續訊息更新：只有使用者本來就接近最底端時才捲下去，
-  //     避免他在往上看歷史訊息時被拉走。
-  const messageCount = conv?.messages.length ?? 0;
-  const conversationKey = `${selectedId ?? ""}:${conv?.conversationId ?? ""}`;
-  const lastConversationKeyRef = useRef<string>("");
+  // 即時刷新：訂閱該 user 的 chat_messages INSERT。
+  // 諮詢師自己送出的訊息也會 echo 回來 → silent loadFor → topic detail 立刻看到自己回了。
+  // 個案那端說了新東西 → topics list 也會被刷新（新 topic 或既有 topic 多一題）。
   useEffect(() => {
-    const el = messagesScrollRef.current;
-    if (!el) return;
-    const isNewConversation = lastConversationKeyRef.current !== conversationKey;
-    lastConversationKeyRef.current = conversationKey;
-
-    if (isNewConversation) {
-      // 切到新對話：直接到底（不需要 smooth）
-      el.scrollTop = el.scrollHeight;
-      return;
-    }
-
-    // 同一段對話新訊息進來：判斷使用者是不是還在底部附近
-    const distanceFromBottom =
-      el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceFromBottom < 120) {
-      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-    }
-  }, [conversationKey, messageCount]);
+    if (!selectedId) return;
+    const supa = getSupabaseBrowser();
+    if (!supa) return;
+    const channel = supa
+      .channel(`counselor-chat:${selectedId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "chat_messages",
+          filter: `user_id=eq.${selectedId}`,
+        },
+        () => {
+          const sid = selectedIdRef.current;
+          if (sid) void loadFor(sid, "silent");
+        },
+      )
+      .subscribe();
+    return () => {
+      void supa.removeChannel(channel);
+    };
+  }, [selectedId, loadFor]);
 
   const filteredUsers = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -259,36 +359,17 @@ export default function CounselorChatPage() {
 
   async function sendReply() {
     const text = draft.trim();
-    if (!text || !selectedId || sending) return;
+    const tid = selectedTopicId;
+    if (!text || !tid || sending) return;
     setSending(true);
     setSendError(null);
     try {
-      const res = await apiFetch<{
-        conversationId: string;
-        message: RemoteMessage;
-      }>(
-        `/api/counselor/users/${encodeURIComponent(selectedId)}/conversation/messages`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            conversationId: conv?.conversationId ?? undefined,
-            text,
-          }),
-        },
+      await apiFetch<{ conversationId: string; topicId: string }>(
+        `/api/counselor/topics/${encodeURIComponent(tid)}/reply`,
+        { method: "POST", body: JSON.stringify({ text }) },
       );
-      // 樂觀更新：把剛送出的訊息直接 push 進對話列，
-      // 不等再打一次 GET（也避免 race）。
-      setConv((prev) => {
-        const baseMessages = prev?.messages ?? [];
-        return {
-          conversationId: res.conversationId,
-          mode: prev?.mode ?? "career",
-          messages: [...baseMessages, res.message],
-        };
-      });
       setDraft("");
-      // 順手 silent refresh 一次，把對話狀態跟 Supabase 對齊
-      // （避免使用者在這段時間又補了一句話我們漏掉）
+      // 順手 silent refresh — 把 topic detail / topics list 拉新。
       const sid = selectedIdRef.current;
       if (sid) void loadFor(sid, "silent");
     } catch (e) {
@@ -299,6 +380,39 @@ export default function CounselorChatPage() {
       setSendError(msg || "送出失敗");
     } finally {
       setSending(false);
+    }
+  }
+
+  async function resolveCurrentTopic() {
+    const tid = selectedTopicId;
+    if (!tid || resolving) return;
+    if (
+      !window.confirm(
+        "確認要把這個主題標記為已解決嗎？AI 會把整理過的 Q&A 推進 RAG，下次相同提問將直接由 AI 回覆。",
+      )
+    ) {
+      return;
+    }
+    setResolving(true);
+    setResolveError(null);
+    try {
+      await apiFetch<{ topic: StoredTopic }>(
+        `/api/counselor/topics/${encodeURIComponent(tid)}/resolve`,
+        { method: "POST" },
+      );
+      // 解決後就回 topics list，並 silent refresh
+      setSelectedTopicId(null);
+      setTopicDetail(null);
+      const sid = selectedIdRef.current;
+      if (sid) void loadFor(sid, "silent");
+    } catch (e) {
+      const msg =
+        typeof e === "object" && e && "message" in e
+          ? String((e as { message?: string }).message ?? "")
+          : "";
+      setResolveError(msg || "標記解決失敗");
+    } finally {
+      setResolving(false);
     }
   }
 
@@ -426,20 +540,48 @@ export default function CounselorChatPage() {
           </div>
         </Pane>
 
-        {/* 中：對話紀錄 */}
+        {/* 中：主題列表 / 主題詳情 */}
         <Pane
           title={
-            selectedUser
-              ? selectedUser.name || selectedUser.email || selectedUser.userId
-              : "選擇一位個案"
+            selectedTopicId && topicDetail
+              ? topicDetail.title || "未命名主題"
+              : selectedUser
+                ? selectedUser.name ||
+                  selectedUser.email ||
+                  selectedUser.userId
+                : "選擇一位個案"
           }
           subtitle={
-            selectedUser
-              ? `對話紀錄${conv?.mode ? `・${conv.mode === "startup" ? "創業模式" : "求職模式"}` : ""}${refreshing ? "・更新中…" : "・每 5 秒自動更新"}`
-              : "從左邊挑一位開始"
+            selectedTopicId && topicDetail
+              ? `${topicDetail.questionCount} 題・由 AI 自動歸類同主題的未解問題`
+              : selectedUser
+                ? `待處理主題${refreshing ? "・更新中…" : "・每 5 秒自動更新"}`
+                : "從左邊挑一位開始"
           }
           headerAction={
-            selectedId ? (
+            selectedTopicId ? (
+              <button
+                onClick={() => {
+                  setSelectedTopicId(null);
+                  setTopicDetail(null);
+                  setDraft("");
+                  setSendError(null);
+                  setResolveError(null);
+                }}
+                style={{
+                  padding: "6px 12px",
+                  borderRadius: 999,
+                  border: `1px solid ${colors.borderStrong}`,
+                  background: "transparent",
+                  color: colors.textSecondary,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                ← 回主題列表
+              </button>
+            ) : selectedId ? (
               <button
                 onClick={() => {
                   const sid = selectedIdRef.current;
@@ -474,66 +616,99 @@ export default function CounselorChatPage() {
             }}
           >
             {!selectedId && (
-              <Empty hint="點左邊的個案，這邊會顯示完整對話紀錄。" />
+              <Empty hint="點左邊的個案，這邊會列出 AI 沒能解決、需要你接手的主題。" />
             )}
-            {selectedId && convLoading && <Empty hint="載入對話中…" />}
-            {selectedId && convError && (
-              <Empty hint={convError} tone="error" />
+
+            {/* —— 主題列表 —— */}
+            {selectedId && !selectedTopicId && (
+              <>
+                {topicsLoading && <Empty hint="載入主題中…" />}
+                {topicsError && <Empty hint={topicsError} tone="error" />}
+                {!topicsLoading && !topicsError && topics.length === 0 && (
+                  <Empty hint="這位 user 沒有需要處理的主題 ✨ 表示 AI 已經把所有問題答清楚了。" />
+                )}
+                {!topicsLoading && !topicsError && topics.length > 0 && (
+                  <div
+                    style={{
+                      flex: 1,
+                      overflowY: "auto",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 10,
+                      paddingRight: 4,
+                    }}
+                  >
+                    {topics.map((t) => (
+                      <TopicCard
+                        key={t.id}
+                        topic={t}
+                        onClick={() => void openTopic(t.id)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
             )}
-            {selectedId &&
-              !convLoading &&
-              !convError &&
-              (conv?.messages.length ?? 0) === 0 && (
-                <Empty hint="這位 user 還沒有任何對話紀錄。直接在下面打第一句話跟他說話吧。" />
-              )}
-            {selectedId && conv && conv.messages.length > 0 && (
-              <div
-                ref={messagesScrollRef}
-                style={{
-                  flex: 1,
-                  overflowY: "auto",
-                  paddingRight: 4,
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 10,
-                }}
-              >
-                {conv.messages.map((m, idx) => {
-                  // 若 user msg 被標 resolved，將同組 (此 user 訊息 + 後面 AI 回覆) 一起淡化 +
-                  // 顯示「已完成」徽章；遇到下一個 user msg 就停止傳染。
-                  let inResolvedPair = false;
-                  if (m.role === "user") {
-                    inResolvedPair = m.resolved === true;
-                  } else if (!m.fromCounselor) {
-                    for (let i = idx - 1; i >= 0; i--) {
-                      const prev = conv.messages[i];
-                      if (prev.role === "user") {
-                        inResolvedPair = prev.resolved === true;
-                        break;
-                      }
-                    }
-                  }
-                  return (
-                    <MessageBubble
-                      key={m.id}
-                      m={m}
-                      dimmed={inResolvedPair}
-                    />
-                  );
-                })}
-              </div>
+
+            {/* —— 主題詳情 —— */}
+            {selectedId && selectedTopicId && (
+              <>
+                {topicDetailLoading && <Empty hint="載入主題詳情中…" />}
+                {topicDetailError && (
+                  <Empty hint={topicDetailError} tone="error" />
+                )}
+                {!topicDetailLoading &&
+                  !topicDetailError &&
+                  topicDetail && (
+                    <TopicDetailView topic={topicDetail} />
+                  )}
+              </>
             )}
           </div>
 
-          {selectedId && (
-            <ReplyComposer
-              draft={draft}
-              setDraft={setDraft}
-              sending={sending}
-              error={sendError}
-              onSend={sendReply}
-              disabled={!conv && !convError}
-            />
+          {selectedId && selectedTopicId && (
+            <>
+              {resolveError && (
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: colors.iosRed,
+                    fontWeight: 600,
+                    marginTop: 6,
+                  }}
+                >
+                  {resolveError}
+                </div>
+              )}
+              <ReplyComposer
+                draft={draft}
+                setDraft={setDraft}
+                sending={sending}
+                error={sendError}
+                onSend={sendReply}
+                disabled={!topicDetail && !topicDetailError}
+              />
+              <div style={{ marginTop: 8, display: "flex", justifyContent: "flex-end" }}>
+                <button
+                  onClick={resolveCurrentTopic}
+                  disabled={resolving || !topicDetail}
+                  style={{
+                    padding: "8px 16px",
+                    borderRadius: radii.md,
+                    border: "none",
+                    background: resolving
+                      ? colors.borderStrong
+                      : "linear-gradient(135deg,#10B981,#059669)",
+                    color: "#fff",
+                    fontSize: 13,
+                    fontWeight: 800,
+                    cursor: resolving || !topicDetail ? "default" : "pointer",
+                  }}
+                >
+                  {resolving ? "整理中…" : "✅ 問題解決（彙整進 RAG）"}
+                </button>
+              </div>
+            </>
           )}
         </Pane>
 
@@ -1125,5 +1300,326 @@ function PriorityBadge({ value }: { value: UserInsight["priority"] }) {
     >
       {value}
     </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Topic 卡片：列在主題列表
+// ---------------------------------------------------------------------------
+function TopicCard({
+  topic,
+  onClick,
+}: {
+  topic: StoredTopic;
+  onClick: () => void;
+}) {
+  const updated = (() => {
+    const d = new Date(topic.updatedAt);
+    return isNaN(d.getTime()) ? "" : d.toLocaleString();
+  })();
+  const resolved = topic.status === "resolved";
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        textAlign: "left",
+        padding: "14px 16px",
+        background: resolved
+          ? "rgba(243,244,246,0.85)"
+          : "rgba(255,255,255,0.92)",
+        border: `1px solid ${resolved ? "#E5E7EB" : colors.border}`,
+        borderRadius: radii.lg,
+        cursor: "pointer",
+        boxShadow: resolved ? "none" : shadows.soft,
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        opacity: resolved ? 0.7 : 1,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span
+          style={{
+            padding: "2px 8px",
+            borderRadius: 999,
+            fontSize: 10,
+            fontWeight: 800,
+            background: resolved
+              ? "#D1FAE5"
+              : "linear-gradient(135deg,#F472B6,#FB7185)",
+            color: resolved ? "#065F46" : "#fff",
+            letterSpacing: 0.4,
+            border: resolved ? "1px solid #6EE7B7" : "none",
+          }}
+        >
+          {resolved ? "✅ 已完成" : "📌 待處理"}
+        </span>
+        <span
+          style={{
+            fontSize: 11,
+            color: colors.textTertiary,
+          }}
+        >
+          {topic.questionCount} 題・{updated}
+        </span>
+      </div>
+      <div
+        style={{
+          fontSize: 16,
+          fontWeight: 800,
+          color: resolved ? "#6B7280" : colors.textPrimary,
+          letterSpacing: -0.2,
+          textDecoration: resolved ? "line-through" : "none",
+          textDecorationColor: "#9CA3AF",
+        }}
+      >
+        {topic.title || "未命名主題"}
+      </div>
+      {topic.summary && (
+        <div
+          style={{
+            fontSize: 13,
+            lineHeight: 1.55,
+            color: resolved ? "#9CA3AF" : colors.textSecondary,
+            display: "-webkit-box",
+            WebkitBoxOrient: "vertical",
+            WebkitLineClamp: 2,
+            overflow: "hidden",
+          }}
+        >
+          {topic.summary}
+        </div>
+      )}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Topic 詳情：列出該主題下所有 user Q + AI 暫時回覆
+// ---------------------------------------------------------------------------
+function TopicDetailView({ topic }: { topic: TopicWithMembers }) {
+  // 把所有成員問題 + 諮詢師回覆按時間排成一條 thread。
+  type Item =
+    | { kind: "q"; createdAt: string; member: TopicMember; index: number }
+    | { kind: "r"; createdAt: string; reply: TopicCounselorReply };
+  const items: Item[] = [
+    ...topic.members.map(
+      (m, i) =>
+        ({
+          kind: "q",
+          createdAt: m.createdAt,
+          member: m,
+          index: i + 1,
+        }) as Item,
+    ),
+    ...(topic.counselorReplies ?? []).map(
+      (r) =>
+        ({
+          kind: "r",
+          createdAt: r.createdAt,
+          reply: r,
+        }) as Item,
+    ),
+  ].sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
+
+  return (
+    <div
+      style={{
+        flex: 1,
+        overflowY: "auto",
+        paddingRight: 4,
+        display: "flex",
+        flexDirection: "column",
+        gap: 14,
+      }}
+    >
+      {topic.summary && (
+        <div
+          style={{
+            padding: "12px 14px",
+            background: colors.surfaceMuted,
+            border: `1px solid ${colors.border}`,
+            borderRadius: radii.md,
+            fontSize: 13,
+            lineHeight: 1.6,
+            color: colors.textSecondary,
+          }}
+        >
+          🧭 主題脈絡：{topic.summary}
+        </div>
+      )}
+      {items.length === 0 && (
+        <div
+          style={{
+            fontSize: 13,
+            color: colors.textTertiary,
+            textAlign: "center",
+            padding: 24,
+          }}
+        >
+          這個主題還沒有任何訊息。
+        </div>
+      )}
+      {items.map((it) =>
+        it.kind === "q" ? (
+          <TopicMemberCard
+            key={it.member.normalizedQuestionId}
+            member={it.member}
+            index={it.index}
+          />
+        ) : (
+          <CounselorReplyCard key={it.reply.messageId} reply={it.reply} />
+        ),
+      )}
+    </div>
+  );
+}
+
+function TopicMemberCard({
+  member,
+  index,
+}: {
+  member: TopicMember;
+  index: number;
+}) {
+  const ts = (() => {
+    const d = new Date(member.createdAt);
+    return isNaN(d.getTime()) ? "" : d.toLocaleString();
+  })();
+  return (
+    <div
+      style={{
+        padding: 12,
+        background: "rgba(255,255,255,0.92)",
+        border: `1px solid ${colors.border}`,
+        borderRadius: radii.lg,
+        boxShadow: shadows.soft,
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 11,
+          color: colors.textTertiary,
+        }}
+      >
+        <span
+          style={{
+            padding: "1px 7px",
+            borderRadius: 999,
+            background: colors.surfaceMuted,
+            fontWeight: 800,
+            color: colors.textSecondary,
+          }}
+        >
+          Q{index}
+        </span>
+        {ts && <span>{ts}</span>}
+        {member.urgency && member.urgency !== "中" && (
+          <span
+            style={{
+              padding: "1px 7px",
+              borderRadius: 999,
+              background: "#FEF3C7",
+              color: "#92400E",
+              fontWeight: 700,
+            }}
+          >
+            迫切：{member.urgency}
+          </span>
+        )}
+      </div>
+      <div
+        style={{
+          fontSize: 14,
+          lineHeight: 1.55,
+          color: colors.textPrimary,
+          whiteSpace: "pre-wrap",
+        }}
+      >
+        {member.rawQuestion || member.normalizedText}
+      </div>
+    </div>
+  );
+}
+
+function CounselorReplyCard({ reply }: { reply: TopicCounselorReply }) {
+  const ts = (() => {
+    const d = new Date(reply.createdAt);
+    return isNaN(d.getTime()) ? "" : d.toLocaleString();
+  })();
+  return (
+    <div
+      style={{
+        padding: 12,
+        background: "linear-gradient(135deg,#EEF2FF,#E0E7FF)",
+        border: "1px solid #C7D2FE",
+        borderLeft: "3px solid #4338CA",
+        borderRadius: radii.lg,
+        boxShadow: shadows.soft,
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        alignSelf: "flex-end",
+        maxWidth: "92%",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 11,
+          color: colors.textTertiary,
+        }}
+      >
+        <span
+          style={{
+            padding: "1px 7px",
+            borderRadius: 999,
+            background: "linear-gradient(135deg,#6366F1,#4338CA)",
+            color: "#fff",
+            fontWeight: 800,
+            letterSpacing: 0.4,
+          }}
+        >
+          👤 我（諮詢師）
+        </span>
+        {ts && <span>{ts}</span>}
+      </div>
+      {reply.replyToText && (
+        <div
+          style={{
+            padding: "6px 10px",
+            background: "rgba(255,255,255,0.7)",
+            borderLeft: "3px solid #818CF8",
+            borderRadius: 6,
+            fontSize: 12,
+            color: colors.textSecondary,
+            display: "-webkit-box",
+            WebkitBoxOrient: "vertical",
+            WebkitLineClamp: 2,
+            overflow: "hidden",
+          }}
+        >
+          ↩ 回覆：{reply.replyToText}
+        </div>
+      )}
+      <div
+        style={{
+          fontSize: 14,
+          lineHeight: 1.55,
+          color: colors.textPrimary,
+          whiteSpace: "pre-wrap",
+        }}
+      >
+        {reply.text}
+      </div>
+    </div>
   );
 }
