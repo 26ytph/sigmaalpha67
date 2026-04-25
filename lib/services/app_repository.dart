@@ -45,6 +45,31 @@ class AppRepository {
 
   static Future<bool> backendAvailable() => BackendApi.health();
 
+  /// 登入完之後呼叫：去後端撈既有 profile / persona 寫回本機。
+  /// 這樣換瀏覽器、清快取、或在新裝置登入，都不會被當成首次使用而被
+  /// 強迫重新填一次 onboarding。
+  ///
+  /// 後端不通 / 沒有資料時，回傳目前的本機狀態，**不會**清掉本機資料。
+  static Future<AppStorage> hydrateFromBackend() async {
+    var current = await load();
+    try {
+      final remoteProfile = await BackendApi.fetchProfile();
+      if (remoteProfile != null && !remoteProfile.isEmpty) {
+        current = current.copyWith(profile: remoteProfile);
+      }
+    } catch (_) {
+      // 網路 / token 問題 → 保留本機
+    }
+    try {
+      final remotePersona = await BackendApi.fetchPersona();
+      if (remotePersona != null && !remotePersona.isEmpty) {
+        current = current.copyWith(persona: remotePersona);
+      }
+    } catch (_) {}
+    await save(current);
+    return current;
+  }
+
   static Future<AppStorage> completeOnboarding({
     required UserProfile profile,
     required String selfIntro,

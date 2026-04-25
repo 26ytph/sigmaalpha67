@@ -89,6 +89,44 @@ class BackendApi {
     }
   }
 
+  /// 從後端把使用者既有的 profile 撈回來。404 (尚未建立) 回 null。
+  static Future<UserProfile?> fetchProfile() async {
+    try {
+      final data = await _request('GET', '/api/users/me/profile');
+      final raw = data['profile'];
+      if (raw is Map) {
+        return _profileFromJson(
+          Map<String, dynamic>.from(raw),
+          fallback: UserProfile.empty(),
+        );
+      }
+      return null;
+    } on BackendApiException catch (e) {
+      // not_found / unauthorized 都當沒資料；上層會 fall back 到本機。
+      if (e.message.contains('404') || e.message.contains('not_found')) {
+        return null;
+      }
+      rethrow;
+    }
+  }
+
+  /// 從後端把 persona 撈回來。404 回 null。
+  static Future<Persona?> fetchPersona() async {
+    try {
+      final data = await _request('GET', '/api/persona');
+      final raw = data['persona'];
+      if (raw is Map) {
+        return _personaFromJson(Map<String, dynamic>.from(raw));
+      }
+      return null;
+    } on BackendApiException catch (e) {
+      if (e.message.contains('404') || e.message.contains('not_found')) {
+        return null;
+      }
+      rethrow;
+    }
+  }
+
   static Future<UserProfile> saveProfile(UserProfile profile) async {
     final data = await _request(
       'PUT',
