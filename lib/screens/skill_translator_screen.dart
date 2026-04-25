@@ -1,8 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
 
-import '../logic/persona_engine.dart';
-import '../logic/skill_translator.dart';
 import '../models/models.dart';
 import '../services/app_repository.dart';
 import '../utils/theme.dart';
@@ -24,6 +22,8 @@ class SkillTranslatorScreen extends StatefulWidget {
 class _SkillTranslatorScreenState extends State<SkillTranslatorScreen> {
   final TextEditingController _input = TextEditingController();
   SkillTranslation? _draft;
+  bool _translating = false;
+  bool _saving = false;
 
   @override
   void dispose() {
@@ -36,39 +36,29 @@ class _SkillTranslatorScreenState extends State<SkillTranslatorScreen> {
     _translate();
   }
 
-  void _translate() {
+  Future<void> _translate() async {
     final raw = _input.text.trim();
-    if (raw.isEmpty) return;
-    setState(() => _draft = SkillTranslatorEngine.translate(raw));
+    if (raw.isEmpty || _translating) return;
+    setState(() => _translating = true);
+    final draft = await AppRepository.translateSkill(raw);
+    if (!mounted) return;
+    setState(() {
+      _draft = draft;
+      _translating = false;
+    });
   }
 
   Future<void> _save() async {
     final draft = _draft;
-    if (draft == null) return;
-    final next = await AppRepository.update((prev) {
-      final list = [...prev.skillTranslations, draft];
-      final newPersona = PersonaEngine.generate(
-        profile: prev.profile,
-        explore: prev.explore,
-        skillTranslations: list,
-        previous: prev.persona,
-      );
-      // 若使用者已手動編輯過 Persona 文字，採輕量更新；否則用全新 Persona。
-      final mergedPersona = prev.persona.userEdited
-          ? prev.persona.copyWith(
-              strengths: newPersona.strengths,
-              skillGaps: newPersona.skillGaps,
-              recommendedNextStep: newPersona.recommendedNextStep,
-              lastUpdated: DateTime.now().toIso8601String(),
-            )
-          : newPersona;
-      return prev.copyWith(skillTranslations: list, persona: mergedPersona);
-    });
+    if (draft == null || _saving) return;
+    setState(() => _saving = true);
+    final next = await AppRepository.saveSkillTranslation(draft);
     if (!mounted) return;
     widget.onStorageChanged(next);
     setState(() {
       _input.clear();
       _draft = null;
+      _saving = false;
     });
     _showToast('已加入 Persona，新的能力會出現在「既有能力」區。');
   }
@@ -129,10 +119,7 @@ class _SkillTranslatorScreenState extends State<SkillTranslatorScreen> {
             _intro(),
             AppGaps.h14,
             _inputCard(),
-            if (_draft != null) ...[
-              AppGaps.h14,
-              _resultCard(_draft!),
-            ],
+            if (_draft != null) ...[AppGaps.h14, _resultCard(_draft!)],
             AppGaps.h20,
             if (history.isNotEmpty) ...[
               const Padding(
@@ -176,8 +163,11 @@ class _SkillTranslatorScreenState extends State<SkillTranslatorScreen> {
               color: AppColors.surface,
               borderRadius: BorderRadius.circular(AppRadii.md),
             ),
-            child: const Icon(CupertinoIcons.sparkles,
-                size: 20, color: AppColors.brandStart),
+            child: const Icon(
+              CupertinoIcons.sparkles,
+              size: 20,
+              color: AppColors.brandStart,
+            ),
           ),
           AppGaps.w12,
           const Expanded(
@@ -234,6 +224,7 @@ class _SkillTranslatorScreenState extends State<SkillTranslatorScreen> {
             controller: _input,
             minLines: 4,
             maxLines: 8,
+            onChanged: (_) => setState(() {}),
             placeholder: '例如：我辦過迎新、社團幹部、做過課內專案訪談…',
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
@@ -264,7 +255,9 @@ class _SkillTranslatorScreenState extends State<SkillTranslatorScreen> {
                 flex: 2,
                 child: CupertinoButton.filled(
                   padding: const EdgeInsets.symmetric(vertical: 12),
-                  onPressed: _input.text.trim().isEmpty ? null : _translate,
+                  onPressed: _input.text.trim().isEmpty || _translating
+                      ? null
+                      : _translate,
                   child: const Text('開始翻譯'),
                 ),
               ),
@@ -320,8 +313,11 @@ class _SkillTranslatorScreenState extends State<SkillTranslatorScreen> {
               children: [
                 const Row(
                   children: [
-                    Icon(CupertinoIcons.doc_text,
-                        size: 14, color: AppColors.brandStart),
+                    Icon(
+                      CupertinoIcons.doc_text,
+                      size: 14,
+                      color: AppColors.brandStart,
+                    ),
                     AppGaps.w6,
                     Text(
                       '可放履歷的句子',
@@ -365,7 +361,7 @@ class _SkillTranslatorScreenState extends State<SkillTranslatorScreen> {
                       flex: 2,
                       child: CupertinoButton.filled(
                         padding: const EdgeInsets.symmetric(vertical: 10),
-                        onPressed: _save,
+                        onPressed: _saving ? null : _save,
                         child: const Text('加入 Persona'),
                       ),
                     ),
@@ -410,10 +406,7 @@ class _SkillTranslatorScreenState extends State<SkillTranslatorScreen> {
             AppGaps.h8,
             const Text(
               '對應職場能力',
-              style: TextStyle(
-                fontSize: 11,
-                color: AppColors.textTertiary,
-              ),
+              style: TextStyle(fontSize: 11, color: AppColors.textTertiary),
             ),
             AppGaps.h6,
             Wrap(
@@ -423,7 +416,9 @@ class _SkillTranslatorScreenState extends State<SkillTranslatorScreen> {
                 for (final s in g.skills)
                   Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 5),
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
                     decoration: BoxDecoration(
                       color: AppColors.surface,
                       borderRadius: BorderRadius.circular(AppRadii.pill),

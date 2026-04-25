@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
 
 import '../data/daily_questions.dart';
@@ -93,6 +95,9 @@ class _PlanScreenState extends State<PlanScreen> {
   void _answer(DailyQuestion q, DailyAnswerValue value) {
     final today = toLocalDateString();
     if (widget.storage.dailyAnswers[today] != null) return;
+    unawaited(
+      AppRepository.answerDailyQuestion(questionId: q.id, answer: value),
+    );
 
     _persist((prev) {
       final prevStrike = prev.strike.current;

@@ -3,12 +3,14 @@ import { withAuth, readJson } from "@/lib/route";
 import { apiError } from "@/lib/errors";
 import { store, newId } from "@/lib/store";
 import { generateChatReply } from "@/engines/chatReply";
+import { generateGeneralChatReply } from "@/engines/geminiChat";
+import { answerRagQuery, shouldUseRag } from "@/engines/rag";
 import type { ChatConversation, ChatMessage } from "@/types/chat";
 
 type Body = {
   conversationId?: string;
   message?: string;
-  context?: { mode?: "career" | "startup"; useProfile?: boolean; useHistory?: boolean };
+  context?: { mode?: "career" | "startup"; useProfile?: boolean; useHistory?: boolean; useRag?: boolean };
 };
 
 export const POST = withAuth(async (req, { auth }) => {
@@ -39,12 +41,52 @@ export const POST = withAuth(async (req, { auth }) => {
 
   const profile = body.context?.useProfile === false ? null : store.profiles.get(auth.userId) ?? null;
   const persona = store.personas.get(auth.userId) ?? null;
-  const { reply, shouldHandoff, tokensUsed } = generateChatReply({
-    message: body.message,
-    profile,
-    persona,
-    mode,
-  });
+  const ragEnabled = body.context?.useRag !== false && shouldUseRag(body.message, mode);
+  const ragResult = ragEnabled
+    ? await answerRagQuery({
+        userId: auth.userId,
+        question: body.message,
+        profile,
+        persona,
+        topK: 5,
+      })
+    : null;
+
+  const history = conv.messages
+    .slice(0, -1)
+    .map((m) => ({ role: m.role as "user" | "assistant", text: m.text }));
+
+  const geminiChat = ragResult
+    ? null
+    : await generateGeneralChatReply({
+        message: body.message,
+        profile,
+        persona,
+        mode,
+        history,
+      });
+
+  const fallback = ragResult || geminiChat
+    ? null
+    : generateChatReply({
+        message: body.message,
+        profile,
+        persona,
+        mode,
+      });
+  const reply =
+    ragResult?.answer ?? geminiChat?.reply ?? fallback?.reply ?? "";
+  const shouldHandoff = ragResult?.shouldHandoff ?? fallback?.shouldHandoff ?? false;
+  const tokensUsed = ragResult
+    ? Math.min(1800, 180 + body.message.length * 2 + ragResult.answer.length * 2)
+    : geminiChat
+      ? Math.min(800, 60 + body.message.length * 2 + geminiChat.reply.length * 2)
+      : fallback?.tokensUsed ?? 0;
+  const chatProvider: "gemini" | "local" | null = ragResult
+    ? null
+    : geminiChat
+      ? "gemini"
+      : "local";
   const replyMsg: ChatMessage = {
     id: newId("m"),
     role: "assistant",
@@ -61,5 +103,18 @@ export const POST = withAuth(async (req, { auth }) => {
     reply,
     shouldHandoff,
     tokensUsed,
+    rag: ragResult
+      ? {
+          provider: ragResult.provider,
+          confidenceScore: ragResult.confidenceScore,
+          logId: ragResult.logId,
+          sources: ragResult.retrievedChunks.map((chunk) => ({
+            title: chunk.title,
+            sourceUrl: chunk.sourceUrl,
+            score: chunk.score,
+          })),
+        }
+      : null,
+    chatProvider,
   });
 });

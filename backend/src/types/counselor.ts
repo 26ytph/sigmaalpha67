@@ -17,6 +17,7 @@ export type CounselorCase = {
   aiDraftReply: string;
   counselorReply?: string;
   savedToKnowledgeBase?: boolean;
+  knowledgeSourceId?: string;
   createdAt: string;
   updatedAt: string;
 };

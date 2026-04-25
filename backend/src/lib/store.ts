@@ -9,6 +9,7 @@ import type { ChatConversation } from "@/types/chat";
 import type { CounselorCase } from "@/types/counselor";
 import type { DailyAnswer, Streak } from "@/types/daily";
 import type { PlanState } from "@/types/plan";
+import type { KnowledgeChunk, KnowledgeSource, RagLog } from "@/types/knowledge";
 
 type StoreShape = {
   profiles: Map<string, Profile>;
@@ -20,6 +21,10 @@ type StoreShape = {
   dailyAnswers: Map<string, DailyAnswer[]>;
   streaks: Map<string, Streak>;
   plans: Map<string, PlanState>;
+  knowledgeSources: Map<string, KnowledgeSource>;
+  knowledgeChunks: Map<string, KnowledgeChunk>;
+  knowledgeSeeded: boolean;
+  ragLogs: RagLog[];
 };
 
 declare global {
@@ -38,6 +43,10 @@ function createStore(): StoreShape {
     dailyAnswers: new Map(),
     streaks: new Map(),
     plans: new Map(),
+    knowledgeSources: new Map(),
+    knowledgeChunks: new Map(),
+    knowledgeSeeded: false,
+    ragLogs: [],
   };
 }
 

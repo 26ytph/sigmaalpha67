@@ -1,6 +1,5 @@
 import 'package:flutter/cupertino.dart';
 
-import '../logic/persona_engine.dart';
 import '../models/models.dart';
 import '../services/app_repository.dart';
 import '../utils/theme.dart';
@@ -41,20 +40,55 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   bool _startupInterest = false;
 
   int _step = 0;
+  bool _saving = false;
   static const _totalSteps = 5;
 
-  static const _gradeOptions = ['高中', '大一', '大二', '大三', '大四', '研究生', '畢業 1–3 年', '已工作'];
+  static const _gradeOptions = [
+    '高中',
+    '大一',
+    '大二',
+    '大三',
+    '大四',
+    '研究生',
+    '畢業 1–3 年',
+    '已工作',
+  ];
   static const _stageOptions = ['在學探索', '應屆畢業生', '想找實習', '想找正職', '想轉職', '創業探索'];
   static const _goalOptions = [
-    '找實習', '找正職', '想轉職', '想創業', '釐清方向', '補強技能', '寫履歷', '練面試',
+    '找實習',
+    '找正職',
+    '想轉職',
+    '想創業',
+    '釐清方向',
+    '補強技能',
+    '寫履歷',
+    '練面試',
   ];
   static const _interestOptions = [
-    '工程／程式', '資料分析', '產品企劃', 'UI/UX 設計', '行銷／內容', '業務／BD',
-    '人資／教育訓練', '財務／會計', '資安', '影音內容', '社群經營', '客戶服務',
+    '工程／程式',
+    '資料分析',
+    '產品企劃',
+    'UI/UX 設計',
+    '行銷／內容',
+    '業務／BD',
+    '人資／教育訓練',
+    '財務／會計',
+    '資安',
+    '影音內容',
+    '社群經營',
+    '客戶服務',
   ];
   static const _experienceOptions = [
-    '社團幹部', '系上活動', '課內專案', '實習', '工讀／打工', '比賽／黑客松',
-    '志工服務', '家教／助教', '個人作品', '經營粉專／IG',
+    '社團幹部',
+    '系上活動',
+    '課內專案',
+    '實習',
+    '工讀／打工',
+    '比賽／黑客松',
+    '志工服務',
+    '家教／助教',
+    '個人作品',
+    '經營粉專／IG',
   ];
 
   @override
@@ -110,6 +144,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Future<void> _finish() async {
+    if (_saving) return;
     final defaultEducation = [
       _school.text.trim(),
       _department.text.trim(),
@@ -135,30 +170,25 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       educationItems: eduList,
       concerns: _concerns.text.trim(),
       startupInterest: _startupInterest,
-      createdAt: widget.initialProfile.createdAt ??
-          DateTime.now().toIso8601String(),
+      createdAt:
+          widget.initialProfile.createdAt ?? DateTime.now().toIso8601String(),
     );
 
     final selfIntroText = _selfIntro.text.trim();
 
-    final next = await AppRepository.update((prev) {
-      // 先用 PersonaEngine 算出結構化欄位（不含 text）
-      final base = PersonaEngine.generate(
-        profile: profile,
-        explore: prev.explore,
-        skillTranslations: prev.skillTranslations,
-        previous: prev.persona,
-      );
-      // text 一律以使用者輸入為準（空就維持空）
-      final newPersona = base.copyWith(text: selfIntroText, userEdited: true);
-      return prev.copyWith(profile: profile, persona: newPersona);
-    });
+    setState(() => _saving = true);
+    final next = await AppRepository.completeOnboarding(
+      profile: profile,
+      selfIntro: selfIntroText,
+    );
 
     if (!mounted) return;
+    setState(() => _saving = false);
     widget.onCompleted(next);
   }
 
   void _next() {
+    if (_saving) return;
     if (_step == _totalSteps - 1) {
       _finish();
     } else {
@@ -194,8 +224,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     child: Icon(
                       _step == 0
                           ? (widget.editing
-                              ? CupertinoIcons.xmark
-                              : CupertinoIcons.sparkles)
+                                ? CupertinoIcons.xmark
+                                : CupertinoIcons.sparkles)
                           : CupertinoIcons.back,
                       color: AppColors.iosBlue,
                       size: 22,
@@ -267,7 +297,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               ),
             ),
             _ContinueBar(
-              canNext: _canNext,
+              canNext: _canNext && !_saving,
               isLast: _step == _totalSteps - 1,
               onNext: _next,
             ),
@@ -311,7 +341,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(small, style: const TextStyle(fontSize: 12, color: AppColors.textTertiary)),
+        Text(
+          small,
+          style: const TextStyle(fontSize: 12, color: AppColors.textTertiary),
+        ),
         AppGaps.h4,
         Text(
           big,
@@ -327,31 +360,31 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Widget _label(String text, {bool required = false}) => Padding(
-        padding: const EdgeInsets.only(bottom: 6),
-        child: Row(
-          children: [
-            Text(
-              text,
-              style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textSecondary,
-              ),
-            ),
-            if (required) ...[
-              AppGaps.w4,
-              const Text(
-                '＊',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.iosRed,
-                ),
-              ),
-            ],
-          ],
+    padding: const EdgeInsets.only(bottom: 6),
+    child: Row(
+      children: [
+        Text(
+          text,
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: AppColors.textSecondary,
+          ),
         ),
-      );
+        if (required) ...[
+          AppGaps.w4,
+          const Text(
+            '＊',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: AppColors.iosRed,
+            ),
+          ),
+        ],
+      ],
+    ),
+  );
 
   Widget _stepBasic({Key? key}) {
     return _wrapCard(
@@ -403,7 +436,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       controller: _age,
                       placeholder: '例如：21',
                       keyboardType: TextInputType.number,
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 12,
+                      ),
                     ),
                   ],
                 ),
@@ -418,7 +454,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     CupertinoTextField(
                       controller: _contact,
                       placeholder: 'email 或 IG',
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 12,
+                      ),
                     ),
                   ],
                 ),
@@ -570,7 +609,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           _label('自介（選填）'),
           const Text(
             '寫不出來也沒關係，留空就好；有想說的就用自己的話寫。',
-            style: TextStyle(fontSize: 11, color: AppColors.textTertiary, height: 1.5),
+            style: TextStyle(
+              fontSize: 11,
+              color: AppColors.textTertiary,
+              height: 1.5,
+            ),
           ),
           AppGaps.h6,
           CupertinoTextField(
@@ -695,7 +738,11 @@ class _ChipGroup extends StatelessWidget {
 }
 
 class _Chip extends StatelessWidget {
-  const _Chip({required this.label, required this.selected, required this.onTap});
+  const _Chip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
 
   final String label;
   final bool selected;

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
@@ -69,15 +71,18 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
 
   void _toggleTodo(int week, String section, int index) {
     final key = makeTodoKey(week, section, index);
+    final done = !(widget.storage.planTodos[key] ?? false);
+    unawaited(AppRepository.setPlanTodo(key: key, done: done));
     _persist((prev) {
       final nextTodos = Map<String, bool>.from(prev.planTodos);
-      nextTodos[key] = !(nextTodos[key] ?? false);
+      nextTodos[key] = done;
       return prev.copyWith(planTodos: nextTodos);
     });
   }
 
   void _setWeekNote(int week, String note) {
     final key = '$week';
+    unawaited(AppRepository.setWeekNote(week: week, note: note));
     _persist((prev) {
       final notes = Map<String, String>.from(prev.planWeekNotes);
       notes[key] = note;
@@ -111,13 +116,13 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
     }
     activeWeekData ??= plan.weeks.isNotEmpty ? plan.weeks.first : null;
 
-    final weekProg = activeWeekData == null ? (done: 0, total: 0, pct: 0) : _weekProgress(activeWeekData);
+    final weekProg = activeWeekData == null
+        ? (done: 0, total: 0, pct: 0)
+        : _weekProgress(activeWeekData);
 
     return CupertinoPageScaffold(
       backgroundColor: const Color(0xFFFFF5F8),
-      navigationBar: const CupertinoNavigationBar(
-        middle: Text('週任務清單'),
-      ),
+      navigationBar: const CupertinoNavigationBar(middle: Text('週任務清單')),
       child: SafeArea(
         child: plan.weeks.isEmpty
             ? const Center(
@@ -135,12 +140,20 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
                 children: [
                   Text(
                     plan.headline,
-                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600, height: 1.25),
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                      height: 1.25,
+                    ),
                   ),
                   const SizedBox(height: 8),
                   const Text(
                     '勾選每週目標、資源與產出，並記錄週心得。',
-                    style: TextStyle(fontSize: 13, height: 1.45, color: Color(0xFF3F3F46)),
+                    style: TextStyle(
+                      fontSize: 13,
+                      height: 1.45,
+                      color: Color(0xFF3F3F46),
+                    ),
                   ),
                   const SizedBox(height: 18),
                   _SectionCard(
@@ -160,7 +173,8 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
                                   week: w,
                                   progress: _weekProgress(w),
                                   selected: _activeWeek == w.week,
-                                  onTap: () => setState(() => _activeWeek = w.week),
+                                  onTap: () =>
+                                      setState(() => _activeWeek = w.week),
                                 ),
                             ],
                           ),
@@ -172,28 +186,47 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
                             decoration: BoxDecoration(
                               color: CupertinoColors.white,
                               borderRadius: BorderRadius.circular(16),
-                              border: Border.all(color: const Color(0x1A000000)),
+                              border: Border.all(
+                                color: const Color(0x1A000000),
+                              ),
                             ),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
                                 Row(
                                   crossAxisAlignment: CrossAxisAlignment.start,
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
                                   children: [
                                     Expanded(
                                       child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
                                         children: [
-                                          Text('第 ${activeWeekData.week} 週', style: const TextStyle(fontSize: 11, color: Color(0xFF52525B))),
+                                          Text(
+                                            '第 ${activeWeekData.week} 週',
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              color: Color(0xFF52525B),
+                                            ),
+                                          ),
                                           const SizedBox(height: 6),
-                                          Text(activeWeekData.title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                                          Text(
+                                            activeWeekData.title,
+                                            style: const TextStyle(
+                                              fontSize: 16,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
                                         ],
                                       ),
                                     ),
                                     Text(
                                       '本週 ${weekProg.done}/${weekProg.total}（${weekProg.pct}%）',
-                                      style: const TextStyle(fontSize: 11, color: Color(0xFF52525B)),
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        color: Color(0xFF52525B),
+                                      ),
                                     ),
                                   ],
                                 ),
@@ -203,10 +236,12 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
                                 Builder(
                                   builder: (context) {
                                     final wk = activeWeekData!;
-                                    final narrow = MediaQuery.sizeOf(context).width < 520;
+                                    final narrow =
+                                        MediaQuery.sizeOf(context).width < 520;
                                     if (narrow) {
                                       return Column(
-                                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.stretch,
                                         children: [
                                           _TodoColumn(
                                             label: '目標',
@@ -238,7 +273,8 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
                                       );
                                     }
                                     return Row(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
                                         Expanded(
                                           child: _TodoColumn(
@@ -280,7 +316,10 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
                                 _WeekCoursesPanel(
                                   week: activeWeekData.week,
                                   courses: plan.courses
-                                      .where((c) => c.spansWeek(activeWeekData!.week))
+                                      .where(
+                                        (c) =>
+                                            c.spansWeek(activeWeekData!.week),
+                                      )
                                       .toList(),
                                 ),
                                 const SizedBox(height: 16),
@@ -289,29 +328,56 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
                                   decoration: BoxDecoration(
                                     color: const Color(0xFFF4F4F5),
                                     borderRadius: BorderRadius.circular(16),
-                                    border: Border.all(color: const Color(0x1A000000)),
+                                    border: Border.all(
+                                      color: const Color(0x1A000000),
+                                    ),
                                   ),
                                   child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
                                     children: [
                                       Row(
-                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.spaceBetween,
                                         children: [
-                                          const Text('任務完成心得', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF3F3F46))),
-                                          Text('第 ${activeWeekData.week} 週', style: const TextStyle(fontSize: 11, color: Color(0xFF71717A))),
+                                          const Text(
+                                            '任務完成心得',
+                                            style: TextStyle(
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w600,
+                                              color: Color(0xFF3F3F46),
+                                            ),
+                                          ),
+                                          Text(
+                                            '第 ${activeWeekData.week} 週',
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              color: Color(0xFF71717A),
+                                            ),
+                                          ),
                                         ],
                                       ),
                                       const SizedBox(height: 10),
                                       _WeekNoteEditor(
                                         key: ValueKey(activeWeekData.week),
                                         week: activeWeekData.week,
-                                        initialText: widget.storage.planWeekNotes['${activeWeekData.week}'] ?? '',
-                                        onChanged: (v) => _setWeekNote(activeWeekData!.week, v),
+                                        initialText:
+                                            widget
+                                                .storage
+                                                .planWeekNotes['${activeWeekData.week}'] ??
+                                            '',
+                                        onChanged: (v) => _setWeekNote(
+                                          activeWeekData!.week,
+                                          v,
+                                        ),
                                       ),
                                       const SizedBox(height: 8),
                                       const Text(
                                         '會自動保存到本機（SharedPreferences）',
-                                        style: TextStyle(fontSize: 11, color: Color(0xFF71717A)),
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: Color(0xFF71717A),
+                                        ),
                                       ),
                                     ],
                                   ),
@@ -365,7 +431,9 @@ class _WeekProgressSelectorTile extends StatelessWidget {
             style: TextStyle(
               fontSize: 13,
               fontWeight: FontWeight.w600,
-              color: selected ? const Color(0xFF18181B) : const Color(0xFF27272A),
+              color: selected
+                  ? const Color(0xFF18181B)
+                  : const Color(0xFF27272A),
             ),
           ),
         ),
@@ -375,7 +443,12 @@ class _WeekProgressSelectorTile extends StatelessWidget {
 }
 
 class _WeekNoteEditor extends StatefulWidget {
-  const _WeekNoteEditor({super.key, required this.week, required this.initialText, required this.onChanged});
+  const _WeekNoteEditor({
+    super.key,
+    required this.week,
+    required this.initialText,
+    required this.onChanged,
+  });
 
   final int week;
   final String initialText;
@@ -386,7 +459,9 @@ class _WeekNoteEditor extends StatefulWidget {
 }
 
 class _WeekNoteEditorState extends State<_WeekNoteEditor> {
-  late final TextEditingController _controller = TextEditingController(text: widget.initialText);
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initialText,
+  );
 
   @override
   void didUpdateWidget(covariant _WeekNoteEditor oldWidget) {
@@ -415,7 +490,11 @@ class _WeekNoteEditorState extends State<_WeekNoteEditor> {
 }
 
 class _SectionCard extends StatelessWidget {
-  const _SectionCard({required this.title, required this.subtitle, required this.child});
+  const _SectionCard({
+    required this.title,
+    required this.subtitle,
+    required this.child,
+  });
 
   final String title;
   final String subtitle;
@@ -430,15 +509,25 @@ class _SectionCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(28),
         border: Border.all(color: const Color(0x1A000000)),
         boxShadow: const [
-          BoxShadow(blurRadius: 36, offset: Offset(0, 22), color: Color(0x1F020617)),
+          BoxShadow(
+            blurRadius: 36,
+            offset: Offset(0, 22),
+            color: Color(0x1F020617),
+          ),
         ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: const TextStyle(fontSize: 13, color: Color(0xFF52525B))),
+          Text(
+            title,
+            style: const TextStyle(fontSize: 13, color: Color(0xFF52525B)),
+          ),
           const SizedBox(height: 6),
-          Text(subtitle, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600)),
+          Text(
+            subtitle,
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+          ),
           const SizedBox(height: 14),
           child,
         ],
@@ -471,7 +560,12 @@ class _TodoColumn extends StatelessWidget {
       children: [
         Text(
           label,
-          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 0.6, color: Color(0xFF52525B)),
+          style: const TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.6,
+            color: Color(0xFF52525B),
+          ),
         ),
         const SizedBox(height: 8),
         for (var i = 0; i < items.length; i++)
@@ -486,7 +580,11 @@ class _TodoColumn extends StatelessWidget {
 }
 
 class _TodoRow extends StatelessWidget {
-  const _TodoRow({required this.text, required this.done, required this.onPressed});
+  const _TodoRow({
+    required this.text,
+    required this.done,
+    required this.onPressed,
+  });
 
   final String text;
   final bool done;
@@ -507,10 +605,18 @@ class _TodoRow extends StatelessWidget {
             alignment: Alignment.center,
             decoration: BoxDecoration(
               color: done ? const Color(0xFFE8F8EE) : CupertinoColors.white,
-              border: Border.all(color: done ? const Color(0xFF86EFAC) : const Color(0x26000000)),
+              border: Border.all(
+                color: done ? const Color(0xFF86EFAC) : const Color(0x26000000),
+              ),
               borderRadius: BorderRadius.circular(5),
             ),
-            child: done ? const Icon(CupertinoIcons.check_mark, size: 12, color: Color(0xFF047857)) : const SizedBox.shrink(),
+            child: done
+                ? const Icon(
+                    CupertinoIcons.check_mark,
+                    size: 12,
+                    color: Color(0xFF047857),
+                  )
+                : const SizedBox.shrink(),
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -519,7 +625,9 @@ class _TodoRow extends StatelessWidget {
               style: TextStyle(
                 fontSize: 13,
                 height: 1.35,
-                decoration: done ? TextDecoration.lineThrough : TextDecoration.none,
+                decoration: done
+                    ? TextDecoration.lineThrough
+                    : TextDecoration.none,
                 color: done ? const Color(0xFF71717A) : const Color(0xFF18181B),
               ),
             ),
@@ -549,16 +657,12 @@ class _WeekCoursesPanel extends StatelessWidget {
         ),
         child: const Row(
           children: [
-            Icon(CupertinoIcons.book,
-                size: 14, color: AppColors.textTertiary),
+            Icon(CupertinoIcons.book, size: 14, color: AppColors.textTertiary),
             SizedBox(width: 8),
             Expanded(
               child: Text(
                 '本週沒有特別推薦課程，先把任務做完即可。',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: AppColors.textTertiary,
-                ),
+                style: TextStyle(fontSize: 12, color: AppColors.textTertiary),
               ),
             ),
           ],
@@ -578,8 +682,11 @@ class _WeekCoursesPanel extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Icon(CupertinoIcons.book_fill,
-                  size: 14, color: AppColors.iosBlue),
+              const Icon(
+                CupertinoIcons.book_fill,
+                size: 14,
+                color: AppColors.iosBlue,
+              ),
               const SizedBox(width: 6),
               const Text(
                 '本週推薦課程／證照',
@@ -656,7 +763,9 @@ class _CourseTile extends StatelessWidget {
                 children: [
                   Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 1),
+                      horizontal: 6,
+                      vertical: 1,
+                    ),
                     decoration: BoxDecoration(
                       color: tagColor.withValues(alpha: 0.12),
                       borderRadius: BorderRadius.circular(4),
