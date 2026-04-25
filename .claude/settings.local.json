@@ -6,7 +6,8 @@
       "Bash(npx tsc *)",
       "Bash(npx next *)",
       "Bash(flutter pub *)",
-      "Bash(flutter build *)"
+      "Bash(flutter build *)",
+      "Bash(pkill -f \"next dev\")"
     ]
   }
 }

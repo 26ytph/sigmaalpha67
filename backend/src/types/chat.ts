@@ -5,6 +5,8 @@ export type ChatMessage = {
   role: ChatRole;
   text: string;
   createdAt: string;
+  /** True if this assistant message was actually sent by a human counselor. */
+  fromCounselor?: boolean;
 };
 
 export type ChatConversation = {

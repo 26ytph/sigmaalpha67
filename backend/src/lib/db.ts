@@ -18,6 +18,7 @@
 
 import { getSupabaseAdmin } from "./supabase";
 import type { Profile } from "@/types/profile";
+import type { CounselorProfile } from "@/types/counselorProfile";
 import type { Persona } from "@/types/persona";
 import type { SwipeRecord } from "@/types/swipe";
 import type { SkillTranslation } from "@/types/skill";
@@ -84,6 +85,75 @@ export async function fetchProfile(userId: string): Promise<Profile | null> {
     startupInterest: data.startup_interest === true,
     createdAt: data.created_at ?? "",
     updatedAt: data.updated_at ?? "",
+  };
+}
+
+/**
+ * 給諮詢師端用：列出所有有 profile 的使用者（id + 顯示名稱）。
+ * Supabase 沒設定就回空陣列，呼叫端會自動 fallback 到 in-memory。
+ */
+export async function listAllUsersForCounselor(
+  limit = 200,
+): Promise<Array<{ userId: string; name: string; email: string }>> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("user_id, name, email, updated_at")
+    .order("updated_at", { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.warn("[db] listAllUsersForCounselor failed:", error.message);
+    return [];
+  }
+  return (data ?? []).map((r: Record<string, unknown>) => ({
+    userId: (r.user_id as string) ?? "",
+    name: (((r.name as string) ?? "") + "").trim(),
+    email: (((r.email as string) ?? "") + "").trim(),
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// COUNSELOR PROFILE  (independent table; doesn't share `profiles`)
+// ---------------------------------------------------------------------------
+
+export async function upsertCounselorProfile(
+  userId: string,
+  p: CounselorProfile,
+) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return;
+  const row = {
+    user_id: userId,
+    name: p.name ?? "",
+    description: p.description ?? "",
+    expertise: p.expertise ?? [],
+    email: p.email ?? "",
+  };
+  const { error } = await supabase
+    .from("counselor_profiles")
+    .upsert(row, { onConflict: "user_id" });
+  if (error) console.warn("[db] upsertCounselorProfile failed:", error.message);
+}
+
+export async function fetchCounselorProfile(
+  userId: string,
+): Promise<CounselorProfile | null> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("counselor_profiles")
+    .select("*")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error || !data) return null;
+  return {
+    name: (data.name as string) ?? "",
+    description: (data.description as string) ?? "",
+    expertise: Array.isArray(data.expertise) ? (data.expertise as string[]) : [],
+    email: (data.email as string) ?? "",
+    createdAt: (data.created_at as string) ?? "",
+    updatedAt: (data.updated_at as string) ?? "",
   };
 }
 
@@ -294,6 +364,32 @@ export async function insertChatMessage(
   if (error) console.warn("[db] insertChatMessage failed:", error.message);
 }
 
+/**
+ * Find the conversation that has the most recent message for this user.
+ * Returns null when the user has zero messages.
+ *
+ * 這個跟 listConversations() 的差別：
+ *   - listConversations() 是依 chat_conversations.created_at（建立時間）排
+ *   - 這個是依 chat_messages.created_at（最近一次訊息時間）排
+ *
+ * 諮詢師看的是「目前還在進行的對話」，所以該用最近有訊息的那段。
+ */
+export async function findMostActiveConversationId(
+  userId: string,
+): Promise<string | null> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("chat_messages")
+    .select("conversation_id, created_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
+  return (data.conversation_id as string) ?? null;
+}
+
 /** List the user's conversations, newest first. */
 export async function listConversations(
   userId: string,
@@ -422,19 +518,25 @@ export async function fetchConversationMessages(
 
   const { data: msgRows, error: msgErr } = await supabase
     .from("chat_messages")
-    .select("id, sender, content, created_at")
+    .select("id, sender, content, created_at, normalized")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: true });
   if (msgErr) {
     console.warn("[db] fetchConversationMessages failed:", msgErr.message);
     return null;
   }
-  const messages: ChatMessage[] = (msgRows ?? []).map((m) => ({
-    id: m.id as string,
-    role: (m.sender as "user" | "assistant") ?? "assistant",
-    text: (m.content as string) ?? "",
-    createdAt: (m.created_at as string) ?? new Date().toISOString(),
-  }));
+  const messages: ChatMessage[] = (msgRows ?? []).map(
+    (m: Record<string, unknown>) => {
+      const norm = m.normalized as { from_counselor?: boolean } | null;
+      return {
+        id: m.id as string,
+        role: (m.sender as "user" | "assistant") ?? "assistant",
+        text: (m.content as string) ?? "",
+        createdAt: (m.created_at as string) ?? new Date().toISOString(),
+        fromCounselor: norm?.from_counselor === true,
+      };
+    },
+  );
   return {
     id: convRow.id as string,
     userId,
