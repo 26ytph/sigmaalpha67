@@ -5,6 +5,10 @@ export type CounselorCaseStatus = "waiting_for_counselor" | "in_progress" | "res
 export type CounselorCase = {
   id: string;
   userId: string;
+  /** 這個 case 對應的 chat_conversations.id；reply 時會把回覆寫進這條對話。 */
+  conversationId?: string;
+  /** 觸發此 case 的 chat_messages.id（user 端的那則訊息）。 */
+  fromMessageId?: string;
   status: CounselorCaseStatus;
   urgency: NormalizedQuestion["urgency"];
   userBackground: string;

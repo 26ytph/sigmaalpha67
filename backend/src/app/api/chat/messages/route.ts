@@ -11,6 +11,7 @@ import {
 } from "@/engines/geminiChat";
 import { answerRagQuery, shouldUseRag } from "@/engines/rag";
 import { generateUserInsight } from "@/engines/userInsight";
+import { processUserQuestion } from "@/engines/normalizeQuestion";
 import {
   buildChatCacheKey,
   checkRate,
@@ -95,6 +96,7 @@ export const POST = withAuth(async (req, { auth }) => {
 
   const profile = body.context?.useProfile === false ? null : store.profiles.get(auth.userId) ?? null;
   const persona = store.personas.get(auth.userId) ?? null;
+
   const ragEnabled = body.context?.useRag !== false && shouldUseRag(body.message, mode);
 
   const personaHash = persona
@@ -131,6 +133,16 @@ export const POST = withAuth(async (req, { auth }) => {
     store.conversations.set(convId, conv);
     await db.insertChatMessage(auth.userId, convId, replyMsg, {
       askedHandoff: cached.shouldHandoff,
+    });
+    refreshNormalizedQuestionInBackground({
+      userId: auth.userId,
+      conversationId: convId,
+      messageId: userMsg.id,
+      question: body.message,
+      assistantReply: cached.reply,
+      profile,
+      persona,
+      history: conv.messages.slice(0, -2),
     });
     return NextResponse.json({
       conversationId: convId,
@@ -204,7 +216,20 @@ export const POST = withAuth(async (req, { auth }) => {
     askedHandoff: shouldHandoff,
   });
 
-  // —— 每 2 則使用者訊息就 fire-and-forget 重算一次 insight ——
+  // —— 正規化 + tag 抽取（不 await，背景跑）——
+  //    把 reply 一起帶進去 → 可以判斷「已解決」並寫到 normalized_questions。
+  refreshNormalizedQuestionInBackground({
+    userId: auth.userId,
+    conversationId: convId,
+    messageId: userMsg.id,
+    question: body.message,
+    assistantReply: reply,
+    profile,
+    persona,
+    history: conv.messages.slice(0, -2), // 不含這次的 user + assistant msg
+  });
+
+  // —— 每 4 則使用者訊息（即每 8 則 total）就 fire-and-forget 重算一次 insight ——
   //    或者：這次被標 shouldHandoff 也立刻重算（諮詢師可能要看了）。
   const userTurns = conv.messages.filter((m) => m.role === "user").length;
   if (userTurns > 0 && (userTurns % 2 === 0 || shouldHandoff)) {
@@ -268,6 +293,49 @@ function refreshInsightInBackground(
       await db.upsertUserInsight(userId, draft);
     } catch (err) {
       console.warn("[insight] background refresh failed:", err);
+    }
+  })();
+}
+
+/**
+ * Per-message normalisation pipeline。
+ *   - 先用 RAG searchKnowledge 看這題是否已經有相似既存問答
+ *   - 沒命中才用 Gemini 整理成正規化摘要 + tags
+ *   - 寫入 normalized_questions（去重後的「新問題清單」），同時把 tags 累加到 user_insights.tags
+ *
+ * 採 fire-and-forget，不阻塞 chat 回覆。
+ */
+function refreshNormalizedQuestionInBackground(opts: {
+  userId: string;
+  conversationId: string;
+  messageId: string;
+  question: string;
+  assistantReply?: string;
+  profile: import("@/types/profile").Profile | null;
+  persona: import("@/types/persona").Persona | null;
+  history: import("@/types/chat").ChatMessage[];
+}) {
+  void (async () => {
+    try {
+      const outcome = await processUserQuestion({
+        question: opts.question,
+        assistantReply: opts.assistantReply,
+        profile: opts.profile,
+        persona: opts.persona,
+        history: opts.history,
+      });
+      if (!outcome.stored) return;
+      await db.insertNormalizedQuestion(
+        opts.userId,
+        opts.conversationId,
+        opts.messageId,
+        outcome.draft,
+      );
+      if (outcome.draft.tags?.length) {
+        await db.appendUserTags(opts.userId, outcome.draft.tags);
+      }
+    } catch (err) {
+      console.warn("[normalizeQuestion] background pipeline failed:", err);
     }
   })();
 }

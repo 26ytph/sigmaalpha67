@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import '../data/roles.dart';
+import '../data/startup_skills.dart';
 import '../models/models.dart';
 
 class PlanWeek {
@@ -663,7 +664,14 @@ List<RecommendedCourse> _coursesFor(RoleTag? top) {
   }
 }
 
-GeneratedPlan generatePlan(List<RoleId> likedRoleIds) {
+GeneratedPlan generatePlan(
+  List<RoleId> likedRoleIds, {
+  AppMode mode = AppMode.career,
+}) {
+  if (mode == AppMode.startup) {
+    return _generateStartupPlan(likedRoleIds);
+  }
+
   final clean = likedRoleIds.toSet().toList();
   final likedRoles = roles.where((r) => clean.contains(r.id)).toList();
   final tagScores = topTagsFromRoleIds(clean);
@@ -687,3 +695,174 @@ GeneratedPlan generatePlan(List<RoleId> likedRoleIds) {
     courses: _coursesFor(top),
   );
 }
+
+// ---------------------------------------------------------------------------
+// 創業者模式：用一份固定 6 週路線。如果使用者有在「探索」滑卡 LIKE 某些
+// 創業能力，那些能力會在 PlanTodosScreen 額外展開成一個「想練的能力」區塊
+// （由 [startupSkillTodos] 提供清單）。
+// ---------------------------------------------------------------------------
+
+GeneratedPlan _generateStartupPlan(List<RoleId> likedSkillIds) {
+  final clean = likedSkillIds.toSet().toList();
+  final likedSkills = clean
+      .map(findStartupSkillById)
+      .whereType<CareerRole>()
+      .toList();
+  final fallback = startupSkills.take(3).toList();
+  return GeneratedPlan(
+    basedOnLikedRoleIds: clean,
+    basedOnTopTags: const [],
+    recommendedRoles: likedSkills.isNotEmpty ? likedSkills : fallback,
+    headline: '把點子做成生意：6 週啟動清單',
+    weeks: _startupWeeks,
+    courses: _startupCourses,
+  );
+}
+
+const List<PlanWeek> _startupWeeks = [
+  PlanWeek(
+    week: 1,
+    title: '點子驗證 — 確認問題真的存在',
+    goals: [
+      '寫下你的點子（一句話 + 為誰）',
+      '列出 3 個最危險的假設',
+      '訪談 5 位潛在客戶（不講解決方案）',
+    ],
+    resources: [
+      '《The Mom Test》第 1–3 章',
+      '一頁問題假設表',
+    ],
+    outputs: [
+      '5 份訪談筆記',
+      '經驗證／待驗證／已 kill 的假設清單',
+    ],
+  ),
+  PlanWeek(
+    week: 2,
+    title: '商業模式 — Lean Canvas 一頁完成',
+    goals: [
+      '填完 Lean Canvas（9 格）',
+      '估算單一客戶 LTV 與 CAC',
+      '寫一句 < 20 字的價值主張',
+    ],
+    resources: [
+      'Lean Canvas 模板',
+      '《Business Model Generation》摘要',
+    ],
+    outputs: [
+      '一頁 Lean Canvas',
+      '一句話定位 + 6 個月現金流草表',
+    ],
+  ),
+  PlanWeek(
+    week: 3,
+    title: 'MVP — 用最少的東西回答最關鍵的問題',
+    goals: [
+      '畫主流程 wireframe（不超過 5 頁）',
+      '用 no-code 工具做出可點擊原型',
+      '邀請 5 位真實 user 試用並錄影',
+    ],
+    resources: [
+      'Tally / Notion / Carrd / Figma',
+      'Wizard of Oz 測試方法',
+    ],
+    outputs: [
+      '可分享的原型連結',
+      '5 份 user testing 筆記',
+    ],
+  ),
+  PlanWeek(
+    week: 4,
+    title: '第一輪驗證 — 找到第一個願意付錢的人',
+    goals: [
+      '設計付費或預購的最小實驗',
+      '上一條冷啟動 channel（IG／PTT／社群）',
+      '量化第一週的轉換漏斗',
+    ],
+    resources: [
+      'Stripe Payment Links / 街口 / Line Pay',
+      'AARRR 漏斗模板',
+    ],
+    outputs: [
+      '第 1 位真實付費客戶（或預購）',
+      '一張漏斗轉換截圖',
+    ],
+  ),
+  PlanWeek(
+    week: 5,
+    title: '公司治理 — 法務、財務、補助一次盤點',
+    goals: [
+      '研究公司登記方式（行號／有限公司）',
+      '草擬 founder agreement（角色、股權、退出）',
+      '挑出 1 個最匹配的政府補助並寫提案',
+    ],
+    resources: [
+      '經濟部商業司公司登記說明',
+      'U-Start / SBIR / 青年創業貸款官網',
+    ],
+    outputs: [
+      '一份 founder agreement 草稿',
+      '一份 3 頁補助提案摘要',
+    ],
+  ),
+  PlanWeek(
+    week: 6,
+    title: '募資準備 — 把故事說給投資人聽',
+    goals: [
+      '寫第一版 10 頁 pitch deck',
+      '錄一段 60 秒 elevator pitch',
+      '找 3 位 mentor 做 mock pitch',
+    ],
+    resources: [
+      'YC pitch deck 範本',
+      'Sequoia memo 結構',
+    ],
+    outputs: [
+      'Pitch deck v1（10 頁）',
+      'Q&A 矩陣（10 個犀利問題）',
+    ],
+  ),
+];
+
+const List<RecommendedCourse> _startupCourses = [
+  RecommendedCourse(
+    id: 'c_startup_yc_school',
+    title: 'Y Combinator Startup School',
+    provider: 'Y Combinator',
+    type: '課程',
+    weeks: [1, 2, 3],
+    detail: '免費線上課；最有名的早期創業 playbook，邊做點子驗證邊看。',
+  ),
+  RecommendedCourse(
+    id: 'c_startup_mom_test',
+    title: '《The Mom Test》',
+    provider: 'Rob Fitzpatrick',
+    type: '課程',
+    weeks: [1],
+    detail: '訪談客戶的聖經，1 天就能看完，能讓你少做一堆白工。',
+  ),
+  RecommendedCourse(
+    id: 'c_startup_appworks',
+    title: 'AppWorks Accelerator 申請準備',
+    provider: 'AppWorks',
+    type: '課程',
+    weeks: [4, 5, 6],
+    detail: '台灣最大早期加速器；準備申請就是把整個 plan 整合成一份 deck。',
+  ),
+  RecommendedCourse(
+    id: 'c_startup_ustart',
+    title: 'U-Start 創新創業計畫',
+    provider: '教育部青年發展署',
+    type: '證照',
+    weeks: [5],
+    detail: '若你還在學或畢業 5 年內，這份補助最值得申請。',
+  ),
+  RecommendedCourse(
+    id: 'c_startup_lean',
+    title: 'Lean Canvas Workshop（線上）',
+    provider: 'Strategyzer',
+    type: '課程',
+    weeks: [2],
+    detail: '把商業模式拆成 9 格的標準工具，一個下午就能跑完一輪。',
+  ),
+];

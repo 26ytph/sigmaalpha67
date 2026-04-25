@@ -49,8 +49,11 @@ class PlanRoadmapScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final plan = generatePlan(storage.explore.likedRoleIds);
     final isStartup = storage.profile.startupInterest;
+    final plan = generatePlan(
+      storage.explore.likedRoleIds,
+      mode: storage.profile.mode,
+    );
 
     final overallTotal = plan.weeks.fold<int>(
       0,

@@ -34,12 +34,14 @@ class RemoteChatMessage {
     required this.role,
     required this.text,
     required this.createdAt,
+    this.byCounselor = false,
   });
 
   final String id;
   final String role; // 'user' | 'assistant'
   final String text;
   final String createdAt;
+  final bool byCounselor;
 
   bool get fromUser => role == 'user';
 }
@@ -63,12 +65,14 @@ class BackendChatReply {
     required this.reply,
     required this.shouldHandoff,
     required this.usedRag,
+    this.messageId,
     this.ragProvider,
     this.chatProvider,
     this.sources = const [],
   });
 
   final String? conversationId;
+  final String? messageId;
   final String reply;
   final bool shouldHandoff;
   final bool usedRag;
@@ -219,6 +223,7 @@ class BackendApi {
                 role: (mm['role'] as String?) ?? 'assistant',
                 text: (mm['text'] as String?) ?? '',
                 createdAt: (mm['createdAt'] as String?) ?? '',
+                byCounselor: mm['byCounselor'] == true,
               ),
             );
           }
@@ -384,6 +389,7 @@ class BackendApi {
     }
     return BackendChatReply(
       conversationId: data['conversationId'] as String?,
+      messageId: data['messageId'] as String?,
       reply: (data['reply'] as String?) ?? '',
       shouldHandoff: data['shouldHandoff'] == true,
       usedRag: rag is Map,
@@ -514,15 +520,7 @@ class BackendApi {
       experiences: List<String>.from(
         (j['experiences'] as List?) ?? fallback.experiences,
       ),
-      educationItems: ((j['educationItems'] as List?) ?? const [])
-          .map((e) {
-            if (e is Map) {
-              return EducationEntry.fromJson(Map<String, dynamic>.from(e));
-            }
-            return EducationEntry.parseFromLine(e?.toString() ?? '');
-          })
-          .where((e) => !e.isEmpty)
-          .toList(),
+      educationItems: EducationEntry.parseListJson(j['educationItems']),
       concerns: (j['concerns'] as String?) ?? fallback.concerns,
       startupInterest:
           (j['startupInterest'] as bool?) ?? fallback.startupInterest,

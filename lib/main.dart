@@ -54,7 +54,8 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   AppStorage? _storage;
-  int _tabIndex = 0;
+  // 預設停留在「首頁」(index 2)。
+  int _tabIndex = 2;
   // 「計畫」：0 = 路線總覽, 1 = 路線圖, 2 = 週任務
   int _planSubIndex = 0;
 
@@ -92,7 +93,7 @@ class _AppShellState extends State<AppShell> {
 
   void _openPersona() {
     setState(() {
-      _tabIndex = 2;
+      _tabIndex = 0;
     });
   }
 
@@ -190,22 +191,26 @@ class _AppShellState extends State<AppShell> {
             child: IndexedStack(
               index: _tabIndex,
               children: [
+                // 0 — 我的檔案
+                meTab,
+                // 1 — 滑卡探索
+                ExploreScreen(
+                  storage: storage,
+                  onStorageChanged: _setStorage,
+                  onGoToPlan: () => _goTo(3),
+                ),
+                // 2 — 首頁（預設）
                 HomeScreen(
                   storage: storage,
                   onStorageChanged: _setStorage,
                   onStartExplore: () => _goTo(1),
                   onOpenPlan: () => _goTo(3),
                   onOpenPersona: _openPersona,
-                  onOpenSkillTranslator: _openSkillTranslatorRoute,
                   onOpenChat: () => _goTo(4),
                 ),
-                ExploreScreen(
-                  storage: storage,
-                  onStorageChanged: _setStorage,
-                  onGoToPlan: () => _goTo(3),
-                ),
-                meTab,
+                // 3 — 職涯路徑
                 planPane,
+                // 4 — AI 小助理
                 ChatScreen(storage: storage),
               ],
             ),
@@ -218,24 +223,24 @@ class _AppShellState extends State<AppShell> {
             activeColor: AppColors.brandStart,
             items: const [
               BottomNavigationBarItem(
+                icon: Icon(CupertinoIcons.person_crop_circle_fill),
+                label: '我的檔案',
+              ),
+              BottomNavigationBarItem(
+                icon: Icon(CupertinoIcons.heart_fill),
+                label: '滑卡探索',
+              ),
+              BottomNavigationBarItem(
                 icon: Icon(CupertinoIcons.house_fill),
                 label: '首頁',
               ),
               BottomNavigationBarItem(
-                icon: Icon(CupertinoIcons.heart_fill),
-                label: '探索',
-              ),
-              BottomNavigationBarItem(
-                icon: Icon(CupertinoIcons.person_crop_circle_fill),
-                label: '我',
-              ),
-              BottomNavigationBarItem(
                 icon: Icon(CupertinoIcons.doc_text_fill),
-                label: '計畫',
+                label: '職涯路徑',
               ),
               BottomNavigationBarItem(
                 icon: Icon(CupertinoIcons.chat_bubble_2_fill),
-                label: 'AI 諮詢',
+                label: 'AI 小助理',
               ),
             ],
           ),

@@ -21,7 +21,7 @@ class ExplorePhotoCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final hue = _stableHue(role.id) % 360;
-    final mainTag = role.tags.isNotEmpty ? role.tags.first.label : '職涯';
+    final hasImage = role.imageSrc.isNotEmpty;
 
     return Container(
       decoration: BoxDecoration(
@@ -38,6 +38,7 @@ class ExplorePhotoCard extends StatelessWidget {
             child: Stack(
               fit: StackFit.expand,
               children: [
+                // 底層：彩色漸層（圖片載入失敗時當 fallback 也好看）
                 Container(
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
@@ -51,6 +52,27 @@ class ExplorePhotoCard extends StatelessWidget {
                     ),
                   ),
                 ),
+                // 主圖（jobs_img/<role>.png）
+                if (hasImage)
+                  Image.asset(
+                    role.imageSrc,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, _, _) => Center(
+                      child: Icon(
+                        CupertinoIcons.briefcase_fill,
+                        size: 96,
+                        color: CupertinoColors.white.withValues(alpha: 0.5),
+                      ),
+                    ),
+                  )
+                else
+                  Center(
+                    child: Icon(
+                      CupertinoIcons.briefcase_fill,
+                      size: 96,
+                      color: CupertinoColors.white.withValues(alpha: 0.5),
+                    ),
+                  ),
                 // 底部黑色漸層（讓白字易讀）
                 Container(
                   decoration: const BoxDecoration(
@@ -64,35 +86,6 @@ class ExplorePhotoCard extends StatelessWidget {
                         Color(0xCC000000),
                       ],
                       stops: [0.0, 0.45, 0.78, 1.0],
-                    ),
-                  ),
-                ),
-                // 中央職位 icon（裝飾）
-                Center(
-                  child: Icon(
-                    CupertinoIcons.briefcase_fill,
-                    size: 96,
-                    color: CupertinoColors.white.withValues(alpha: 0.5),
-                  ),
-                ),
-                // 右上角 #tag 徽章
-                Positioned(
-                  top: 14,
-                  right: 14,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: CupertinoColors.white.withValues(alpha: 0.92),
-                      borderRadius: BorderRadius.circular(AppRadii.pill),
-                    ),
-                    child: Text(
-                      '#$mainTag',
-                      style: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w800,
-                        color: AppColors.brandStart,
-                      ),
                     ),
                   ),
                 ),

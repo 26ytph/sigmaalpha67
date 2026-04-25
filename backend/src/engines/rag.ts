@@ -302,6 +302,20 @@ export async function answerRagQuery(opts: {
   };
 }
 
+/**
+ * 語意相似度（0..1）— 用 chunk 同款的 token + cosine + overlap，
+ * 主要拿來判斷「LLM 生成的回答」跟「KB 既有答案」夠不夠像。
+ * 不引入新的 embedding stack；和 searchKnowledge 的打分維持一致 spirit。
+ */
+export function scoreTextSimilarity(a: string, b: string): number {
+  const ta = expandTokens(extractTokens(a ?? ""));
+  const tb = expandTokens(extractTokens(b ?? ""));
+  if (ta.length === 0 || tb.length === 0) return 0;
+  const vectorScore = cosineSimilarity(embedTokens(ta), embedTokens(tb));
+  const overlapScore = tokenOverlap(ta, tb);
+  return roundScore(Math.min(1, vectorScore * 0.7 + overlapScore * 0.3));
+}
+
 export function buildCounselorFaqSource(opts: {
   question: string;
   answer: string;
