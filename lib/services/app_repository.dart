@@ -426,6 +426,145 @@ class AppRepository {
     } catch (_) {}
   }
 
+  // ===========================================================================
+  // CustomPlan 維護：使用者可編輯 / 可勾選 / 可 prompt 更新的計畫主資料源。
+  // ===========================================================================
+
+  /// 把 deterministic 的 [GeneratedPlan]（4–8 週模板）轉成可編輯的
+  /// [CustomPlan]，每個任務指派 stable id。Seed 時用。
+  static CustomPlan customPlanFromGenerated(
+    GeneratedPlan src, {
+    required String goalPrompt,
+  }) {
+    final weeks = <CustomPlanWeek>[];
+    for (final w in src.weeks) {
+      final tasks = <PlanTask>[];
+      for (var i = 0; i < w.goals.length; i++) {
+        tasks.add(
+          PlanTask(
+            id: _stableTaskId('w${w.week}', 'goals', i, w.goals[i]),
+            title: w.goals[i],
+            section: 'goals',
+          ),
+        );
+      }
+      for (var i = 0; i < w.resources.length; i++) {
+        tasks.add(
+          PlanTask(
+            id: _stableTaskId('w${w.week}', 'resources', i, w.resources[i]),
+            title: w.resources[i],
+            section: 'resources',
+          ),
+        );
+      }
+      for (var i = 0; i < w.outputs.length; i++) {
+        tasks.add(
+          PlanTask(
+            id: _stableTaskId('w${w.week}', 'outputs', i, w.outputs[i]),
+            title: w.outputs[i],
+            section: 'outputs',
+          ),
+        );
+      }
+      weeks.add(CustomPlanWeek(week: w.week, title: w.title, tasks: tasks));
+    }
+    return CustomPlan(
+      headline: src.headline,
+      weeks: weeks,
+      goalPrompt: goalPrompt,
+      lastUpdated: DateTime.now().toIso8601String(),
+      fromAi: false,
+    );
+  }
+
+  static int _idCounter = 0;
+  static String _stableTaskId(
+    String weekKey,
+    String section,
+    int idx,
+    String seed,
+  ) {
+    _idCounter += 1;
+    final h = seed.hashCode.abs().toRadixString(36);
+    return 'tpl_${weekKey}_${section}_${idx}_${h}_$_idCounter';
+  }
+
+  /// 全部寫掉 customPlan（toggle / edit / delete / add 共用入口）。
+  static Future<AppStorage> updateCustomPlan(
+    CustomPlan Function(CustomPlan prev) updater,
+  ) async {
+    return update((prev) {
+      final next = updater(prev.customPlan);
+      return prev.copyWith(
+        customPlan: next.copyWith(
+          lastUpdated: DateTime.now().toIso8601String(),
+        ),
+      );
+    });
+  }
+
+  /// 直接覆寫整份 customPlan（AI refine 完用）。
+  static Future<AppStorage> setCustomPlan(CustomPlan plan) async {
+    return update(
+      (prev) => prev.copyWith(
+        customPlan: plan.copyWith(
+          lastUpdated: DateTime.now().toIso8601String(),
+        ),
+      ),
+    );
+  }
+
+  /// 用 [BackendApi.refinePlan] 跑一輪 AI 更新；done 狀態與 userAdded 任務
+  /// 在前端做 merge 以求穩定。回 null = AI 不可用，UI 應提示。
+  static Future<({CustomPlan plan, bool fromAi})?> refinePlanWithAi({
+    required String prompt,
+    required AppStorage storage,
+  }) async {
+    final remote = await BackendApi.refinePlan(
+      prompt: prompt,
+      currentPlan: storage.customPlan,
+      mode: storage.profile.mode,
+      persona: storage.persona.isEmpty ? null : storage.persona,
+    );
+    if (remote == null) return null;
+
+    // Merge：把舊計畫中已勾選 done / 使用者新增的任務狀態套到新計畫。
+    final oldById = <String, PlanTask>{};
+    final oldByTitle = <String, PlanTask>{};
+    for (final w in storage.customPlan.weeks) {
+      for (final t in w.tasks) {
+        oldById[t.id] = t;
+        oldByTitle[t.title.trim().toLowerCase()] = t;
+      }
+    }
+    final mergedWeeks = <CustomPlanWeek>[];
+    for (final w in remote.plan.weeks) {
+      final mergedTasks = <PlanTask>[];
+      for (final t in w.tasks) {
+        final old = oldById[t.id] ??
+            oldByTitle[t.title.trim().toLowerCase()];
+        if (old != null) {
+          mergedTasks.add(
+            t.copyWith(
+              id: old.id, // keep stable id
+              done: old.done,
+              userAdded: old.userAdded,
+              userEdited: old.userEdited || t.title != old.title,
+            ),
+          );
+        } else {
+          mergedTasks.add(t);
+        }
+      }
+      mergedWeeks.add(
+        CustomPlanWeek(week: w.week, title: w.title, tasks: mergedTasks),
+      );
+    }
+    final merged = remote.plan.copyWith(weeks: mergedWeeks);
+    await setCustomPlan(merged);
+    return (plan: merged, fromAi: remote.fromAi);
+  }
+
   static Future<void> setWeekNote({
     required int week,
     required String note,

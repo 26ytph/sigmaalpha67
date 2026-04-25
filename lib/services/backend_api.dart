@@ -501,6 +501,114 @@ class BackendApi {
     }
   }
 
+  /// 呼叫後端 `POST /api/plan/refine` — 把使用者一段自然語言（例如
+  /// 「我想投 DevOps 實習」「我已經會 Docker，幫我跳過」）丟給 Gemini，
+  /// 請它依現有 [currentPlan] 產出新版（保留 task id 以維持勾選狀態）。
+  ///
+  /// 回 `null` 代表 Gemini 不可用 / 後端不通；上層應 fallback。
+  static Future<({CustomPlan plan, bool fromAi})?> refinePlan({
+    required String prompt,
+    required CustomPlan currentPlan,
+    required AppMode mode,
+    Persona? persona,
+  }) async {
+    try {
+      final body = <String, dynamic>{
+        'prompt': prompt,
+        'currentPlan': _customPlanForRefineJson(currentPlan),
+        'mode': mode == AppMode.startup ? 'startup' : 'career',
+        if (persona != null && !persona.isEmpty)
+          'persona': _personaToJson(persona),
+      };
+      final data = await _request('POST', '/api/plan/refine', body: body);
+      final raw = data['plan'];
+      if (raw is! Map) return null;
+      final fromAi = data['fromAi'] == true;
+      final parsed = _customPlanFromRefineJson(
+        Map<String, dynamic>.from(raw),
+        fallbackHeadline: currentPlan.headline,
+      );
+      if (parsed == null) return null;
+      return (
+        plan: parsed.copyWith(fromAi: fromAi, goalPrompt: prompt),
+        fromAi: fromAi,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Map<String, dynamic> _customPlanForRefineJson(CustomPlan p) => {
+        'headline': p.headline,
+        'weeks': p.weeks
+            .map(
+              (w) => {
+                'week': w.week,
+                'title': w.title,
+                'tasks': w.tasks
+                    .map(
+                      (t) => {
+                        'id': t.id,
+                        'title': t.title,
+                        'description': t.description,
+                        'section': t.section,
+                        'done': t.done,
+                        'userAdded': t.userAdded,
+                      },
+                    )
+                    .toList(),
+              },
+            )
+            .toList(),
+      };
+
+  static CustomPlan? _customPlanFromRefineJson(
+    Map<String, dynamic> j, {
+    required String fallbackHeadline,
+  }) {
+    final headline = (j['headline'] as String?)?.trim() ?? fallbackHeadline;
+    final weeksRaw = (j['weeks'] as List?) ?? const [];
+    final weeks = <CustomPlanWeek>[];
+    for (final w in weeksRaw) {
+      if (w is! Map) continue;
+      final m = Map<String, dynamic>.from(w);
+      final week = (m['week'] as num?)?.toInt() ?? 0;
+      final title = (m['title'] as String?)?.trim() ?? '';
+      if (week <= 0 || title.isEmpty) continue;
+      final tasksRaw = (m['tasks'] as List?) ?? const [];
+      final tasks = <PlanTask>[];
+      for (final t in tasksRaw) {
+        if (t is! Map) continue;
+        final tm = Map<String, dynamic>.from(t);
+        final id = ((tm['id'] as String?) ?? '').trim();
+        final taskTitle = ((tm['title'] as String?) ?? '').trim();
+        if (id.isEmpty || taskTitle.isEmpty) continue;
+        final sectionRaw =
+            ((tm['section'] as String?) ?? 'goals').toLowerCase();
+        final section = (sectionRaw == 'resources' ||
+                sectionRaw == 'outputs')
+            ? sectionRaw
+            : 'goals';
+        tasks.add(
+          PlanTask(
+            id: id,
+            title: taskTitle,
+            description: ((tm['description'] as String?) ?? '').trim(),
+            section: section,
+          ),
+        );
+      }
+      if (tasks.isEmpty) continue;
+      weeks.add(CustomPlanWeek(week: week, title: title, tasks: tasks));
+    }
+    if (weeks.isEmpty) return null;
+    return CustomPlan(
+      headline: headline,
+      weeks: weeks,
+      lastUpdated: DateTime.now().toIso8601String(),
+    );
+  }
+
   /// 從後端拉滑卡結果（GET /api/swipe/summary）。
   /// 換裝置 / 清快取後，這是把使用者按過 ❤ 的職位帶回來的唯一管道。
   /// 之後 `generatePlan(likedRoleIds, ...)` 才有得算。

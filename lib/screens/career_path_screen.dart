@@ -1,4 +1,5 @@
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/material.dart' show Icons;
 
 import '../logic/generate_plan.dart' as plan;
 import '../models/models.dart';
@@ -6,29 +7,25 @@ import '../services/app_repository.dart';
 import '../utils/theme.dart';
 
 /// 職涯路徑頁：兩個內建分頁
-///   - Tab 0：Roadmap 地圖 — 一條像旅程的曲線，串連最多 4 個 week 節點 + 1 個 goal。
-///                點擊 week 節點 → 切到 Tab 1 並滾到對應週卡片。
-///   - Tab 1：每週 Todo List — 上方顯示月份目標 + 興趣 chips，中段是週卡片清單，
-///                每張卡片有 checkbox 樣式的待辦；底部固定一顆「查看更新」按鈕。
+///   - Tab 0：Roadmap 地圖 — 串連最多 4 個 week 節點 + 1 個 goal。
+///   - Tab 1：每週 Todo List — 真正可編輯的任務清單。
 ///
-/// 「Roadmap 是依 Persona + 興趣推算出該補哪些技能」
-/// ────────────────────────────────────────────────
-/// 真正算出本月任務的是 [plan.generatePlan]：
-///   1. 輸入 = 使用者按 ❤ 過的職位（[ExploreResults.likedRoleIds]） + mode（求職/創業）
-///   2. 內部 → 把 likedRoles 轉成 RoleTag 排名 → 對應到該 tag 的週課表
-///      （[plan.baseWeeks]） + 推薦課程 / 證照 ([plan._coursesFor])
-///   3. 輸出 = `GeneratedPlan` 的 weeks（goals / resources / outputs）
+/// 資料源
+/// ────────
+/// 真正驅動畫面的是 [AppStorage.customPlan]：每個任務都有 stable id，
+/// 使用者勾選 / 編輯 / 刪除 / 新增 → 直接寫進 SharedPreferences（透過
+/// [AppRepository.updateCustomPlan]）。重啟 app 不會清空。
 ///
-/// 介面個人化會再用：
-///   - `profile.name` / `profile.currentStage`：問候、副標
-///   - `persona.recommendedNextStep` / `profile.goals`：本月目標 headline
-///   - `persona.mainInterests` ∪ `profile.interests`：介面上的 chip
+/// 第一次進來若 `customPlan` 為空：用本機 [plan.generatePlan] seed 一份
+/// （給 task 補 id），同時背景打 `POST /api/plan/generate`，如果有
+/// GEMINI_API_KEY 就會拿到 AI 客製版蓋過本機模板。
 ///
-/// 「查看更新」打的是後端的 4 條：
-///   - GET /api/users/me/profile      → profile（含 interests）
-///   - GET /api/persona               → persona（含 mainInterests / 推薦下一步）
-///   - GET /api/swipe/summary         → likedRoleIds（決定整份 plan 的核心輸入）
-///   - GET /api/skills/translations   → 技能翻譯（之後可以選擇加進週任務）
+/// AI 更新
+/// ────────
+/// 「告訴 AI 你的目標」按鈕會打開 prompt 輸入框，把使用者輸入連同當前
+/// `customPlan` 一起送到 `/api/plan/refine`。Gemini 會依需求改寫計畫，
+/// 後端保證每個 task 都有 id；前端再依 id（或 title）merge 回舊的勾選
+/// 狀態與使用者新增的任務。
 class CareerPathScreen extends StatefulWidget {
   const CareerPathScreen({
     super.key,
@@ -51,104 +48,238 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
   int _tab = 0;
   bool _refreshing = false;
   bool _aiPlanLoading = false;
-  bool _planFromBackend = false;
+  bool _aiRefining = false;
   final ScrollController _todoScroll = ScrollController();
   final Map<int, GlobalKey> _weekKeys = {};
-
-  // todo 勾選狀態（local-only；app 重啟會清空）。
-  // key = '<weekNumber>:<todoIdx>'
-  final Map<String, bool> _todoDone = {};
-
-  late plan.GeneratedPlan _plan;
-
-  /// 用來判斷「需不需要重打 LLM」的 signature（liked + mode + persona text）。
-  /// 避免每次 `setState` 都重新打 Gemini，浪費 quota。
-  String _planSignature = '';
-  // ignore: unused_field
-  Object? _activeFetchToken;
 
   @override
   void initState() {
     super.initState();
-    _plan = _buildLocalPlan(widget.storage);
-    _planSignature = _signatureFor(widget.storage);
-    // 立刻打一次後端，如果有 GEMINI_API_KEY 設好就會拿到客製化 plan。
-    _fetchBackendPlan(widget.storage);
+    _seedIfNeeded();
   }
 
   @override
   void didUpdateWidget(covariant CareerPathScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final old = oldWidget.storage;
-    final cur = widget.storage;
-    final newSig = _signatureFor(cur);
-    if (newSig != _planSignature) {
-      _planSignature = newSig;
-      // 立刻先用本機重算一次 — 等 LLM 回來再覆蓋。
-      setState(() {
-        _plan = _buildLocalPlan(cur);
-        _planFromBackend = false;
-      });
-      _fetchBackendPlan(cur);
-    } else if (!identical(
-          old.explore.likedRoleIds,
-          cur.explore.likedRoleIds,
-        ) ||
-        old.profile.startupInterest != cur.profile.startupInterest) {
-      // 同 signature 但 reference 變了（很少見）— 也重算本機，不打 LLM。
-      setState(() => _plan = _buildLocalPlan(cur));
+    // 若使用者第一次完成 Onboarding 或剛滑完卡才回到這頁，
+    // customPlan 仍可能是空的；補 seed。
+    _seedIfNeeded();
+  }
+
+  /// 第一次進來 / customPlan 還沒任何 task → 用本機模板先 seed，
+  /// 再背景撈 AI 客製版蓋掉。已經有 plan 就不動，避免覆蓋使用者編輯。
+  Future<void> _seedIfNeeded() async {
+    if (!widget.storage.customPlan.isEmpty) return;
+    final localPlan = plan.generatePlan(
+      widget.storage.explore.likedRoleIds,
+      mode: widget.storage.profile.mode,
+    );
+    if (localPlan.weeks.isEmpty) return; // 沒滑過卡，等使用者去探索
+    final seeded = AppRepository.customPlanFromGenerated(
+      localPlan,
+      goalPrompt: '',
+    );
+    final next = await AppRepository.setCustomPlan(seeded);
+    if (!mounted) return;
+    widget.onStorageChanged(next);
+
+    // 背景：嘗試打後端 LLM。失敗就保留本機 seed 版。
+    _hydrateFromBackend();
+  }
+
+  Future<void> _hydrateFromBackend() async {
+    if (_aiPlanLoading) return;
+    setState(() => _aiPlanLoading = true);
+    final result = await AppRepository.fetchPlan(widget.storage);
+    if (!mounted) {
+      return;
     }
+    if (!result.fromBackend) {
+      setState(() => _aiPlanLoading = false);
+      return;
+    }
+    // 用後端版重新 seed（保留使用者已勾選 / userAdded 的任務）。
+    final aiSeed = AppRepository.customPlanFromGenerated(
+      result.plan,
+      goalPrompt: widget.storage.customPlan.goalPrompt,
+    ).copyWith(fromAi: true);
+    final merged = _mergeKeepUserState(
+      previous: widget.storage.customPlan,
+      next: aiSeed,
+    );
+    final updated = await AppRepository.setCustomPlan(merged);
+    if (!mounted) return;
+    setState(() => _aiPlanLoading = false);
+    widget.onStorageChanged(updated);
   }
 
-  static plan.GeneratedPlan _buildLocalPlan(AppStorage s) {
-    return plan.generatePlan(s.explore.likedRoleIds, mode: s.profile.mode);
-  }
-
-  String _signatureFor(AppStorage s) {
-    final liked = [...s.explore.likedRoleIds]..sort();
-    return [
-      s.profile.startupInterest ? 'startup' : 'career',
-      liked.join(','),
-      s.persona.text,
-      s.persona.recommendedNextStep,
-    ].join('|');
-  }
-
-  /// 背景打後端取 LLM 客製化 plan。失敗就保持本機版本。
-  /// 用 token 防止舊 request 蓋掉新的（race-condition guard）。
-  Future<void> _fetchBackendPlan(AppStorage s) async {
-    final token = Object();
-    _activeFetchToken = token;
-    if (mounted) setState(() => _aiPlanLoading = true);
-    final result = await AppRepository.fetchPlan(s);
-    if (!mounted || _activeFetchToken != token) return;
-    setState(() {
-      _aiPlanLoading = false;
-      if (result.fromBackend) {
-        _plan = result.plan;
-        _planFromBackend = true;
+  /// 把舊計畫裡 user 已勾選 / userAdded 的東西 merge 進新計畫。
+  /// 先用 task.id 對應；對不上時 fallback 用 title 比對。
+  CustomPlan _mergeKeepUserState({
+    required CustomPlan previous,
+    required CustomPlan next,
+  }) {
+    final byId = <String, PlanTask>{};
+    final byTitle = <String, PlanTask>{};
+    final userAddedByWeek = <int, List<PlanTask>>{};
+    for (final w in previous.weeks) {
+      for (final t in w.tasks) {
+        byId[t.id] = t;
+        byTitle[t.title.trim().toLowerCase()] = t;
+        if (t.userAdded) {
+          userAddedByWeek.putIfAbsent(w.week, () => []).add(t);
+        }
       }
+    }
+    final mergedWeeks = <CustomPlanWeek>[];
+    for (final w in next.weeks) {
+      final mergedTasks = <PlanTask>[];
+      for (final t in w.tasks) {
+        final old = byId[t.id] ?? byTitle[t.title.trim().toLowerCase()];
+        if (old != null) {
+          mergedTasks.add(
+            t.copyWith(
+              id: old.id,
+              done: old.done,
+              userAdded: old.userAdded,
+            ),
+          );
+        } else {
+          mergedTasks.add(t);
+        }
+      }
+      // 把使用者自己加在這週的 task 接回來（避免被新版蓋掉）。
+      final extras = userAddedByWeek[w.week] ?? const <PlanTask>[];
+      for (final extra in extras) {
+        if (!mergedTasks.any((m) => m.id == extra.id)) {
+          mergedTasks.add(extra);
+        }
+      }
+      mergedWeeks.add(
+        CustomPlanWeek(week: w.week, title: w.title, tasks: mergedTasks),
+      );
+    }
+    return next.copyWith(weeks: mergedWeeks);
+  }
+
+  // —— 取資料 ——————————————————————————————————————————
+
+  CustomPlan get _plan => widget.storage.customPlan;
+  bool get _planFromBackend => _plan.fromAi;
+
+  CustomPlanWeek? _findWeek(int weekNum) {
+    for (final w in _plan.weeks) {
+      if (w.week == weekNum) return w;
+    }
+    return null;
+  }
+
+  /// 一週要顯示的 todo：以 goals + outputs 為主，最多 6 條。
+  /// 若只有 goals 也算數；包含 user 新增的 task。
+  List<PlanTask> _todosFor(int weekNum) {
+    final w = _findWeek(weekNum);
+    if (w == null) return const [];
+    final filtered = [
+      ...w.tasks.where((t) => t.section == 'goals'),
+      ...w.tasks.where((t) => t.section == 'outputs'),
+    ];
+    return filtered.take(6).toList(growable: false);
+  }
+
+  bool _isDoneById(String id) {
+    for (final w in _plan.weeks) {
+      for (final t in w.tasks) {
+        if (t.id == id) return t.done;
+      }
+    }
+    return false;
+  }
+
+  // —— Mutations：所有 todo 編輯走這條 ——————————————————————
+
+  Future<void> _persistPlanMutation(
+    CustomPlan Function(CustomPlan prev) mut,
+  ) async {
+    final next = await AppRepository.updateCustomPlan(mut);
+    if (!mounted) return;
+    widget.onStorageChanged(next);
+  }
+
+  void _toggleTask(String taskId) {
+    _persistPlanMutation((prev) => _mapTask(prev, taskId, (t) {
+          return t.copyWith(done: !t.done);
+        }));
+  }
+
+  void _editTaskTitle(String taskId, String newTitle) {
+    final trimmed = newTitle.trim();
+    if (trimmed.isEmpty) return;
+    _persistPlanMutation((prev) => _mapTask(prev, taskId, (t) {
+          return t.copyWith(title: trimmed, userEdited: true);
+        }));
+  }
+
+  void _deleteTask(String taskId) {
+    _persistPlanMutation((prev) {
+      return prev.copyWith(
+        weeks: prev.weeks
+            .map(
+              (w) => w.copyWith(
+                tasks: w.tasks.where((t) => t.id != taskId).toList(),
+              ),
+            )
+            .toList(),
+      );
     });
   }
 
-  // —— 一週要顯示的 todo：goals + outputs（resources 是閱讀資源，先留下不顯）
-  List<String> _todosFor(plan.PlanWeek w) {
-    return [...w.goals, ...w.outputs].take(5).toList(growable: false);
+  void _addTaskToWeek(int weekNum, String title) {
+    final trimmed = title.trim();
+    if (trimmed.isEmpty) return;
+    final id =
+        'usr_${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}_${trimmed.hashCode.abs().toRadixString(36)}';
+    _persistPlanMutation((prev) {
+      return prev.copyWith(
+        weeks: prev.weeks.map((w) {
+          if (w.week != weekNum) return w;
+          return w.copyWith(
+            tasks: [
+              ...w.tasks,
+              PlanTask(
+                id: id,
+                title: trimmed,
+                section: 'goals',
+                userAdded: true,
+              ),
+            ],
+          );
+        }).toList(),
+      );
+    });
   }
 
-  bool _isDone(int weekNum, int idx) =>
-      _todoDone['$weekNum:$idx'] ?? false;
-
-  void _toggleTodo(int weekNum, int idx) {
-    setState(() => _todoDone['$weekNum:$idx'] = !_isDone(weekNum, idx));
+  CustomPlan _mapTask(
+    CustomPlan prev,
+    String taskId,
+    PlanTask Function(PlanTask t) f,
+  ) {
+    return prev.copyWith(
+      weeks: prev.weeks
+          .map(
+            (w) => w.copyWith(
+              tasks: w.tasks.map((t) => t.id == taskId ? f(t) : t).toList(),
+            ),
+          )
+          .toList(),
+    );
   }
 
-  double _weekCompletion(plan.PlanWeek w) {
-    final items = _todosFor(w);
+  double _weekCompletion(int weekNum) {
+    final items = _todosFor(weekNum);
     if (items.isEmpty) return 0;
     var done = 0;
-    for (var i = 0; i < items.length; i++) {
-      if (_isDone(w.week, i)) done++;
+    for (final t in items) {
+      if (t.done) done++;
     }
     return done / items.length;
   }
@@ -163,18 +294,19 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
     return names[DateTime.now().month - 1];
   }
 
-  /// 本月目標：persona 推薦的下一步 > 使用者自寫的 goals[0] > Plan headline。
+  /// 本月目標：customPlan.goalPrompt > persona.recommendedNextStep > goals[0] > headline。
   String get _monthGoal {
+    if (_plan.goalPrompt.trim().isNotEmpty) return _plan.goalPrompt.trim();
     final persona = widget.storage.persona;
     final profile = widget.storage.profile;
     if (persona.recommendedNextStep.isNotEmpty) {
       return persona.recommendedNextStep;
     }
     if (profile.goals.isNotEmpty) return profile.goals.first;
-    return _plan.headline;
+    if (_plan.headline.isNotEmpty) return _plan.headline;
+    return '先做出方向感：用 4–8 週找到你的下一步';
   }
 
-  /// 副標：呼叫使用者名字 + 標出階段；空狀態給 onboarding 提示。
   String get _monthSub {
     final profile = widget.storage.profile;
     if (_plan.weeks.isEmpty) {
@@ -182,13 +314,15 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
           ? '到「滑卡探索」按 ❤ 一些有興趣的職位，這條路線就會自動長出來 ✨'
           : '${profile.name}，去滑卡 ❤ 一些有興趣的職位，這個月的任務就會跟你對齊 ✨';
     }
+    if (_plan.goalPrompt.trim().isNotEmpty) {
+      return '已根據你的目標客製化任務，可以隨時點下方按鈕再更新。';
+    }
     if (profile.currentStage.isNotEmpty) {
       return '${profile.currentStage}階段，先把這幾週的能力打底。';
     }
     return '一步一步來，不急著馬上找到答案。';
   }
 
-  /// persona.mainInterests 優先，profile.interests 補位，去重後最多 5 個。
   List<String> get _topInterests {
     final out = <String>[];
     final seen = <String>{};
@@ -207,7 +341,7 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
     return out;
   }
 
-  // —— Tab navigation ———————————————————————————————————————
+  // —— Tab navigation ————————————————————————————————————
 
   void _jumpToWeek(int weekNum) {
     setState(() => _tab = 1);
@@ -224,7 +358,7 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
     });
   }
 
-  // —— 「查看更新」：合併 refresh profile + persona + swipes + translations ——
+  // —— 「查看更新」：refresh profile + persona + swipes + translations ——
 
   Future<void> _checkUpdates() async {
     if (_refreshing) return;
@@ -240,19 +374,13 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
         result.exploreChanged == null &&
         result.translationsChanged == null;
     if (allFailed) {
-      _showDialog(
-        title: '無法連線',
-        body: '剛剛沒拿到任何資料。已沿用本機現況。',
-      );
+      _showDialog(title: '無法連線', body: '剛剛沒拿到任何資料。已沿用本機現況。');
       return;
     }
 
     final summary = _summarize(result);
     if (summary.isEmpty) {
-      _showDialog(
-        title: '已是最新內容',
-        body: '個人資料、Persona、滑卡結果都沒有更動 🌸',
-      );
+      _showDialog(title: '已是最新內容', body: '個人資料、Persona、滑卡結果都沒有更動 🌸');
     } else {
       _showDialog(title: '已同步', body: summary);
     }
@@ -269,7 +397,7 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
     if (r.profileChanged == true) lines.add('・個人資料已更新');
     if (r.personaChanged == true) lines.add('・Persona 已更新');
     if ((r.exploreChanged ?? 0) > 0) {
-      lines.add('・滑卡結果有 ${r.exploreChanged} 筆變動，已重新生成路線');
+      lines.add('・滑卡結果有 ${r.exploreChanged} 筆變動');
     }
     if ((r.translationsChanged ?? 0) > 0) {
       lines.add('・新增 / 更動 ${r.translationsChanged} 筆技能翻譯');
@@ -297,13 +425,121 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
     );
   }
 
+  // —— AI prompt sheet：使用者口語化更新計畫 ——————————————————
+
+  Future<void> _openAiRefineSheet() async {
+    final initial = _plan.goalPrompt;
+    final result = await showCupertinoModalPopup<String>(
+      context: context,
+      builder: (ctx) => _AiRefineSheet(initialPrompt: initial),
+    );
+    if (result == null) return;
+    final prompt = result.trim();
+    if (prompt.isEmpty) return;
+    await _runAiRefine(prompt);
+  }
+
+  Future<void> _runAiRefine(String prompt) async {
+    if (_aiRefining) return;
+    setState(() => _aiRefining = true);
+    final res = await AppRepository.refinePlanWithAi(
+      prompt: prompt,
+      storage: widget.storage,
+    );
+    if (!mounted) return;
+    setState(() => _aiRefining = false);
+    if (res == null) {
+      _showDialog(
+        title: 'AI 暫時無法更新',
+        body: '可能是後端離線或 Gemini quota 用光了。\n你還是可以手動編輯任務或稍後再試。',
+      );
+      return;
+    }
+    final fresh = await AppRepository.update((p) => p);
+    if (!mounted) return;
+    widget.onStorageChanged(fresh);
+    _showDialog(
+      title: res.fromAi ? '計畫已根據你的目標更新 ✨' : '已收到，但暫無 AI 結果',
+      body: res.fromAi
+          ? '勾選過的任務若仍然合理會保留打勾狀態。\n你可以再點任意任務 → 編輯 / 刪除來微調。'
+          : '請稍後再試一次，或自己手動編輯週任務。',
+    );
+  }
+
+  // —— 編輯 / 新增任務的 modal ————————————————————————————
+
+  Future<void> _openEditTaskSheet(PlanTask task) async {
+    final newTitle = await _showTextInputDialog(
+      context: context,
+      title: '編輯任務',
+      initialText: task.title,
+      placeholder: '任務內容',
+      submitLabel: '儲存',
+    );
+    if (newTitle == null) return;
+    if (newTitle.trim().isEmpty) {
+      _deleteTask(task.id);
+    } else {
+      _editTaskTitle(task.id, newTitle);
+    }
+  }
+
+  Future<void> _openAddTaskSheet(int weekNum) async {
+    final title = await _showTextInputDialog(
+      context: context,
+      title: '新增任務（第 $weekNum 週）',
+      initialText: '',
+      placeholder: '例如：跟學長約一次 mock interview',
+      submitLabel: '加入',
+    );
+    if (title == null) return;
+    _addTaskToWeek(weekNum, title);
+  }
+
+  Future<String?> _showTextInputDialog({
+    required BuildContext context,
+    required String title,
+    required String initialText,
+    required String placeholder,
+    required String submitLabel,
+  }) async {
+    final controller = TextEditingController(text: initialText);
+    return showCupertinoDialog<String>(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: Text(title),
+        content: Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: CupertinoTextField(
+            controller: controller,
+            placeholder: placeholder,
+            autofocus: true,
+            minLines: 1,
+            maxLines: 4,
+          ),
+        ),
+        actions: [
+          CupertinoDialogAction(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: const Text('取消'),
+          ),
+          CupertinoDialogAction(
+            isDefaultAction: true,
+            onPressed: () => Navigator.pop(ctx, controller.text),
+            child: Text(submitLabel),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _todoScroll.dispose();
     super.dispose();
   }
 
-  // —— Build ————————————————————————————————————————————————
+  // —— Build ————————————————————————————————————————————
 
   @override
   Widget build(BuildContext context) {
@@ -336,7 +572,7 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
                     ? _RoadmapView(
                         key: const ValueKey('roadmap'),
                         weeks: weeks,
-                        completionFor: _weekCompletion,
+                        completionFor: (w) => _weekCompletion(w.week),
                         onTapWeek: _jumpToWeek,
                         userName: widget.storage.profile.name,
                         onOpenExplore: widget.onOpenExplore,
@@ -346,17 +582,22 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
                         scrollController: _todoScroll,
                         weeks: weeks,
                         weekKeys: _weekKeys,
-                        todosFor: _todosFor,
-                        isDone: _isDone,
-                        onToggle: _toggleTodo,
+                        todosFor: (w) => _todosFor(w.week),
+                        isDoneById: _isDoneById,
+                        onToggle: _toggleTask,
+                        onEdit: _openEditTaskSheet,
+                        onDelete: _deleteTask,
+                        onAddTask: _openAddTaskSheet,
                         monthLabel: _monthLabel,
                         monthGoal: _monthGoal,
                         monthSub: _monthSub,
                         interests: _topInterests,
                         aiCustomized: _planFromBackend,
                         aiLoading: _aiPlanLoading,
+                        aiRefining: _aiRefining,
                         refreshing: _refreshing,
                         onCheckUpdates: _checkUpdates,
+                        onAiRefine: _openAiRefineSheet,
                         onOpenExplore: widget.onOpenExplore,
                       ),
               ),
@@ -449,7 +690,8 @@ class _PillButton extends StatelessWidget {
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w800,
-                color: selected ? CupertinoColors.white : AppColors.textSecondary,
+                color:
+                    selected ? CupertinoColors.white : AppColors.textSecondary,
               ),
             ),
           ],
@@ -473,8 +715,8 @@ class _RoadmapView extends StatelessWidget {
     required this.onOpenExplore,
   });
 
-  final List<plan.PlanWeek> weeks;
-  final double Function(plan.PlanWeek week) completionFor;
+  final List<CustomPlanWeek> weeks;
+  final double Function(CustomPlanWeek week) completionFor;
   final ValueChanged<int> onTapWeek;
   final String userName;
   final VoidCallback? onOpenExplore;
@@ -546,13 +788,11 @@ class _RoadmapView extends StatelessWidget {
                               _nodeSize(i, positions.length) / 2,
                           child: _RoadmapNode(
                             label: i < weeks.length ? '${weeks[i].week}' : '🎯',
-                            sublabel: i < weeks.length
-                                ? weeks[i].title
-                                : '完成本月目標',
+                            sublabel:
+                                i < weeks.length ? weeks[i].title : '完成本月目標',
                             isGoal: i == positions.length - 1,
-                            progress: i < weeks.length
-                                ? completionFor(weeks[i])
-                                : null,
+                            progress:
+                                i < weeks.length ? completionFor(weeks[i]) : null,
                             size: _nodeSize(i, positions.length),
                             onTap: i < weeks.length
                                 ? () => onTapWeek(weeks[i].week)
@@ -746,7 +986,8 @@ class _LegendDot extends StatelessWidget {
           decoration: BoxDecoration(
             color: color,
             shape: BoxShape.circle,
-            border: borderColor != null ? Border.all(color: borderColor!) : null,
+            border:
+                borderColor != null ? Border.all(color: borderColor!) : null,
           ),
         ),
         AppGaps.w6,
@@ -946,33 +1187,43 @@ class _TodoListView extends StatelessWidget {
     required this.weeks,
     required this.weekKeys,
     required this.todosFor,
-    required this.isDone,
+    required this.isDoneById,
     required this.onToggle,
+    required this.onEdit,
+    required this.onDelete,
+    required this.onAddTask,
     required this.monthLabel,
     required this.monthGoal,
     required this.monthSub,
     required this.interests,
     required this.aiCustomized,
     required this.aiLoading,
+    required this.aiRefining,
     required this.refreshing,
     required this.onCheckUpdates,
+    required this.onAiRefine,
     required this.onOpenExplore,
   });
 
   final ScrollController scrollController;
-  final List<plan.PlanWeek> weeks;
+  final List<CustomPlanWeek> weeks;
   final Map<int, GlobalKey> weekKeys;
-  final List<String> Function(plan.PlanWeek week) todosFor;
-  final bool Function(int weekNum, int idx) isDone;
-  final void Function(int weekNum, int idx) onToggle;
+  final List<PlanTask> Function(CustomPlanWeek week) todosFor;
+  final bool Function(String id) isDoneById;
+  final void Function(String taskId) onToggle;
+  final Future<void> Function(PlanTask task) onEdit;
+  final void Function(String taskId) onDelete;
+  final Future<void> Function(int weekNum) onAddTask;
   final String monthLabel;
   final String monthGoal;
   final String monthSub;
   final List<String> interests;
   final bool aiCustomized;
   final bool aiLoading;
+  final bool aiRefining;
   final bool refreshing;
   final VoidCallback onCheckUpdates;
+  final VoidCallback onAiRefine;
   final VoidCallback? onOpenExplore;
 
   @override
@@ -1006,8 +1257,11 @@ class _TodoListView extends StatelessWidget {
                     child: _WeekCard(
                       week: w,
                       todos: todosFor(w),
-                      isDone: isDone,
+                      isDoneById: isDoneById,
                       onToggle: onToggle,
+                      onEdit: onEdit,
+                      onDelete: onDelete,
+                      onAdd: () => onAddTask(w.week),
                     ),
                   ),
                   AppGaps.h12,
@@ -1024,52 +1278,101 @@ class _TodoListView extends StatelessWidget {
           ),
           child: SafeArea(
             top: false,
-            child: SizedBox(
-              width: double.infinity,
-              child: CupertinoButton(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                color: AppColors.brandStart,
-                borderRadius: BorderRadius.circular(AppRadii.pill),
-                onPressed: refreshing ? null : onCheckUpdates,
-                child: refreshing
-                    ? const Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          CupertinoActivityIndicator(
-                            color: CupertinoColors.white,
+            child: Column(
+              children: [
+                SizedBox(
+                  width: double.infinity,
+                  child: CupertinoButton(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    color: AppColors.brandStart,
+                    borderRadius: BorderRadius.circular(AppRadii.pill),
+                    onPressed: aiRefining ? null : onAiRefine,
+                    child: aiRefining
+                        ? const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              CupertinoActivityIndicator(
+                                color: CupertinoColors.white,
+                              ),
+                              SizedBox(width: 8),
+                              Text(
+                                'AI 更新中…',
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w800,
+                                  color: CupertinoColors.white,
+                                ),
+                              ),
+                            ],
+                          )
+                        : const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                CupertinoIcons.sparkles,
+                                size: 18,
+                                color: CupertinoColors.white,
+                              ),
+                              SizedBox(width: 8),
+                              Text(
+                                '告訴 AI 你的目標',
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w800,
+                                  color: CupertinoColors.white,
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                            ],
                           ),
-                          SizedBox(width: 8),
-                          Text(
-                            '更新中…',
-                            style: TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w800,
-                              color: CupertinoColors.white,
-                            ),
+                  ),
+                ),
+                AppGaps.h8,
+                SizedBox(
+                  width: double.infinity,
+                  child: CupertinoButton(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    color: AppColors.surface,
+                    borderRadius: BorderRadius.circular(AppRadii.pill),
+                    onPressed: refreshing ? null : onCheckUpdates,
+                    child: refreshing
+                        ? const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              CupertinoActivityIndicator(),
+                              SizedBox(width: 8),
+                              Text(
+                                '同步中…',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppColors.textSecondary,
+                                ),
+                              ),
+                            ],
+                          )
+                        : const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                CupertinoIcons.refresh_circled,
+                                size: 16,
+                                color: AppColors.textSecondary,
+                              ),
+                              SizedBox(width: 6),
+                              Text(
+                                '同步個人資料 / 滑卡結果',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppColors.textSecondary,
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
-                      )
-                    : const Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            CupertinoIcons.refresh_circled_solid,
-                            size: 18,
-                            color: CupertinoColors.white,
-                          ),
-                          SizedBox(width: 8),
-                          Text(
-                            '查看更新',
-                            style: TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w800,
-                              color: CupertinoColors.white,
-                              letterSpacing: 0.5,
-                            ),
-                          ),
-                        ],
-                      ),
-              ),
+                  ),
+                ),
+              ],
             ),
           ),
         ),
@@ -1104,7 +1407,7 @@ class _TodoListView extends StatelessWidget {
           ),
           AppGaps.h6,
           const Text(
-            '到「滑卡探索」按 ❤ 一些有興趣的職位，這個月的任務就會自己長出來。',
+            '到「滑卡探索」按 ❤ 一些有興趣的職位，這個月的任務就會自己長出來。\n或是直接點下面的「告訴 AI 你的目標」自己出題。',
             textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: 13,
@@ -1200,10 +1503,7 @@ class _MonthHeader extends StatelessWidget {
               ),
               const Spacer(),
               if (aiLoading)
-                const _AiBadge(
-                  label: 'AI 客製中…',
-                  showSpinner: true,
-                )
+                const _AiBadge(label: 'AI 客製中…', showSpinner: true)
               else if (aiCustomized)
                 const _AiBadge(label: 'AI 客製'),
             ],
@@ -1291,20 +1591,24 @@ class _WeekCard extends StatelessWidget {
   const _WeekCard({
     required this.week,
     required this.todos,
-    required this.isDone,
+    required this.isDoneById,
     required this.onToggle,
+    required this.onEdit,
+    required this.onDelete,
+    required this.onAdd,
   });
 
-  final plan.PlanWeek week;
-  final List<String> todos;
-  final bool Function(int weekNum, int idx) isDone;
-  final void Function(int weekNum, int idx) onToggle;
+  final CustomPlanWeek week;
+  final List<PlanTask> todos;
+  final bool Function(String id) isDoneById;
+  final void Function(String taskId) onToggle;
+  final Future<void> Function(PlanTask task) onEdit;
+  final void Function(String taskId) onDelete;
+  final VoidCallback onAdd;
 
   @override
   Widget build(BuildContext context) {
-    final doneCount = [
-      for (var i = 0; i < todos.length; i++) if (isDone(week.week, i)) 1,
-    ].length;
+    final doneCount = [for (final t in todos) if (isDoneById(t.id)) 1].length;
     final allDone = todos.isNotEmpty && doneCount == todos.length;
 
     return Container(
@@ -1373,12 +1677,46 @@ class _WeekCard extends StatelessWidget {
             ),
           ),
           AppGaps.h10,
-          for (var i = 0; i < todos.length; i++)
+          for (final t in todos)
             _TodoRow(
-              text: todos[i],
-              done: isDone(week.week, i),
-              onTap: () => onToggle(week.week, i),
+              key: ValueKey(t.id),
+              task: t,
+              done: isDoneById(t.id),
+              onTap: () => onToggle(t.id),
+              onEdit: () => onEdit(t),
+              onDelete: () => onDelete(t.id),
             ),
+          AppGaps.h6,
+          Align(
+            alignment: Alignment.centerLeft,
+            child: CupertinoButton(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 6,
+              ),
+              minimumSize: Size.zero,
+              onPressed: onAdd,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: const [
+                  Icon(
+                    CupertinoIcons.add_circled,
+                    size: 14,
+                    color: AppColors.brandStart,
+                  ),
+                  SizedBox(width: 6),
+                  Text(
+                    '新增任務',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.brandStart,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -1387,60 +1725,152 @@ class _WeekCard extends StatelessWidget {
 
 class _TodoRow extends StatelessWidget {
   const _TodoRow({
-    required this.text,
+    super.key,
+    required this.task,
     required this.done,
     required this.onTap,
+    required this.onEdit,
+    required this.onDelete,
   });
 
-  final String text;
+  final PlanTask task;
   final bool done;
   final VoidCallback onTap;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
-    return CupertinoButton(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      minimumSize: Size.zero,
-      onPressed: onTap,
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
-            width: 22,
-            height: 22,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              gradient: done ? AppColors.brandGradient : null,
-              color: done ? null : AppColors.surfaceMuted,
-              shape: BoxShape.circle,
-              border: done
-                  ? null
-                  : Border.all(color: AppColors.separator, width: 1.5),
+          // 勾選框
+          CupertinoButton(
+            padding: const EdgeInsets.all(6),
+            minimumSize: Size.zero,
+            onPressed: onTap,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              width: 22,
+              height: 22,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                gradient: done ? AppColors.brandGradient : null,
+                color: done ? null : AppColors.surfaceMuted,
+                shape: BoxShape.circle,
+                border: done
+                    ? null
+                    : Border.all(color: AppColors.separator, width: 1.5),
+              ),
+              child: done
+                  ? const Icon(
+                      CupertinoIcons.check_mark,
+                      size: 14,
+                      color: CupertinoColors.white,
+                    )
+                  : null,
             ),
-            child: done
-                ? const Icon(
-                    CupertinoIcons.check_mark,
-                    size: 14,
-                    color: CupertinoColors.white,
-                  )
-                : null,
           ),
-          AppGaps.w10,
+          // 內容（點擊也視為勾選 / 取消）
           Expanded(
-            child: Text(
-              text,
-              style: TextStyle(
-                fontSize: 14,
-                height: 1.5,
-                fontWeight: FontWeight.w600,
-                decoration: done ? TextDecoration.lineThrough : null,
-                decorationColor: AppColors.textTertiary,
-                color: done ? AppColors.textTertiary : AppColors.textPrimary,
+            child: GestureDetector(
+              onTap: onTap,
+              behavior: HitTestBehavior.opaque,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        task.title,
+                        style: TextStyle(
+                          fontSize: 14,
+                          height: 1.5,
+                          fontWeight: FontWeight.w600,
+                          decoration:
+                              done ? TextDecoration.lineThrough : null,
+                          decorationColor: AppColors.textTertiary,
+                          color: done
+                              ? AppColors.textTertiary
+                              : AppColors.textPrimary,
+                        ),
+                      ),
+                    ),
+                    if (task.userAdded || task.userEdited) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: AppColors.brandStart.withValues(alpha: 0.10),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          task.userAdded ? '自訂' : '已編輯',
+                          style: const TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.brandStart,
+                            letterSpacing: 0.4,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
               ),
             ),
           ),
+          // overflow 選單
+          CupertinoButton(
+            padding: const EdgeInsets.all(6),
+            minimumSize: Size.zero,
+            onPressed: () => _showActions(context),
+            child: const Icon(
+              Icons.more_vert,
+              size: 18,
+              color: AppColors.textTertiary,
+            ),
+          ),
         ],
+      ),
+    );
+  }
+
+  void _showActions(BuildContext context) {
+    showCupertinoModalPopup<void>(
+      context: context,
+      builder: (ctx) => CupertinoActionSheet(
+        title: Text(
+          task.title,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+        actions: [
+          CupertinoActionSheetAction(
+            onPressed: () {
+              Navigator.pop(ctx);
+              onEdit();
+            },
+            child: const Text('編輯任務'),
+          ),
+          CupertinoActionSheetAction(
+            isDestructiveAction: true,
+            onPressed: () {
+              Navigator.pop(ctx);
+              onDelete();
+            },
+            child: const Text('刪除這個任務'),
+          ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('取消'),
+        ),
       ),
     );
   }
@@ -1488,6 +1918,184 @@ class _AiBadge extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// AI Refine sheet — 使用者用自然語言告訴 AI 他要什麼
+// =============================================================================
+
+class _AiRefineSheet extends StatefulWidget {
+  const _AiRefineSheet({required this.initialPrompt});
+  final String initialPrompt;
+
+  @override
+  State<_AiRefineSheet> createState() => _AiRefineSheetState();
+}
+
+class _AiRefineSheetState extends State<_AiRefineSheet> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.initialPrompt);
+
+  static const _quickPrompts = [
+    '我想投 DevOps 實習',
+    '我已經會 Docker 了，幫我跳過',
+    '把焦點轉到後端工程，弱化前端',
+    '我想做 UX Research，幫我加上訪談技巧',
+    '計畫太重了，幫我精簡到一週只做 2 件事',
+  ];
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+    return Padding(
+      padding: EdgeInsets.only(bottom: bottomInset),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+        decoration: const BoxDecoration(
+          color: AppColors.bg,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: AppColors.separator,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+              ),
+              AppGaps.h12,
+              Row(
+                children: const [
+                  Icon(
+                    CupertinoIcons.sparkles,
+                    size: 18,
+                    color: AppColors.brandStart,
+                  ),
+                  SizedBox(width: 8),
+                  Text(
+                    '告訴 AI 你的目標',
+                    style: TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w900,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ],
+              ),
+              AppGaps.h6,
+              const Text(
+                '比如「我想投 DevOps 實習」「我已經會 Docker 了」「把焦點轉到後端」。\n'
+                'AI 會依現有計畫調整，已勾選的任務會盡量保留打勾。',
+                style: TextStyle(
+                  fontSize: 12,
+                  height: 1.55,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+              AppGaps.h14,
+              CupertinoTextField(
+                controller: _controller,
+                autofocus: true,
+                minLines: 3,
+                maxLines: 6,
+                placeholder: '輸入一段話...',
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(AppRadii.lg),
+                  border: Border.all(color: AppColors.separator),
+                ),
+              ),
+              AppGaps.h10,
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final p in _quickPrompts)
+                    GestureDetector(
+                      onTap: () => setState(() => _controller.text = p),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: AppColors.surface,
+                          borderRadius: BorderRadius.circular(AppRadii.pill),
+                          border: Border.all(color: AppColors.separator),
+                        ),
+                        child: Text(
+                          p,
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              AppGaps.h16,
+              Row(
+                children: [
+                  Expanded(
+                    child: CupertinoButton(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      color: AppColors.surface,
+                      borderRadius: BorderRadius.circular(AppRadii.pill),
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text(
+                        '取消',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    flex: 2,
+                    child: CupertinoButton(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      color: AppColors.brandStart,
+                      borderRadius: BorderRadius.circular(AppRadii.pill),
+                      onPressed: () =>
+                          Navigator.pop(context, _controller.text),
+                      child: const Text(
+                        '送出給 AI',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w900,
+                          color: CupertinoColors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
