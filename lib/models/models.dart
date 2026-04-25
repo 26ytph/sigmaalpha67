@@ -235,6 +235,86 @@ class EducationEntry {
       grade: parts.sublist(2).join(' '),
     );
   }
+
+  /// 用來判斷一個字串長得像不像「年級」（用於 legacy 偵測）。
+  static final RegExp _gradeLike = RegExp(
+    r'(高中|高一|高二|高三|大[一二三四]|碩[一二]|博|畢業|年級|研一|研二|國[一二三]|高中部)',
+  );
+
+  /// 用來判斷字串是否包含內部分隔（空白或 ・·|/，,）。
+  /// 沒有 → 像「原子欄位」（學校／系／年級各自一個 element）；
+  /// 有  → 像「整行學歷」（'台大 資工 大三'）。
+  static final RegExp _eduSeparator = RegExp(r'[\s・·|/，,]');
+
+  /// 從 JSON 解析 `educationItems`，含 legacy 格式遷移。
+  ///
+  /// 接受三種輸入：
+  /// 1. `List<Map>` — 新格式，每個 map 是一筆學歷（直接還原）。
+  /// 2. `List<String>` 但是「一個欄位一個字串」的舊格式（學校／系／年級拆 2–3 筆寫進來）—
+  ///    會偵測並合併回一筆。
+  /// 3. `List<String>` 每筆是合併行如「台大 資工 大三」— 用 [parseFromLine]。
+  static List<EducationEntry> parseListJson(dynamic raw) {
+    final list = (raw as List?) ?? const [];
+    if (list.isEmpty) return const [];
+
+    // (2) Legacy split-fields 偵測：一筆學歷被拆成 2–3 個純字串。
+    //     觸發條件：list 全是 String、長度 2 或 3，且
+    //       - 至少一個 element 像年級，或
+    //       - 全部 element 都是「原子欄位」（沒有內部空白／分隔符）。
+    final allStrings = list.every((e) => e is String);
+    if (allStrings && list.length >= 2 && list.length <= 3) {
+      final strings = list.cast<String>().map((s) => s.trim()).toList();
+      final gradeIdx = strings.indexWhere(_gradeLike.hasMatch);
+      final allSingleToken = strings
+          .every((s) => s.isNotEmpty && !_eduSeparator.hasMatch(s));
+      if (gradeIdx >= 0 || allSingleToken) {
+        String school = '';
+        String department = '';
+        String grade = '';
+        if (gradeIdx >= 0) {
+          grade = strings[gradeIdx];
+          final remaining = [
+            for (var i = 0; i < strings.length; i++)
+              if (i != gradeIdx) strings[i],
+          ];
+          if (remaining.length == 1) {
+            school = remaining[0];
+          } else if (remaining.length == 2) {
+            // 較長的當學校（'國立臺灣大學' vs '社會系'）。
+            if (remaining[0].length >= remaining[1].length) {
+              school = remaining[0];
+              department = remaining[1];
+            } else {
+              school = remaining[1];
+              department = remaining[0];
+            }
+          }
+        } else {
+          // 沒抓到年級但全是原子欄位：以位置推 [學校, 學系, (年級)]
+          school = strings[0];
+          if (strings.length >= 2) department = strings[1];
+          if (strings.length >= 3) grade = strings[2];
+        }
+        final merged = EducationEntry(
+          school: school,
+          department: department,
+          grade: grade,
+        );
+        return merged.isEmpty ? const [] : [merged];
+      }
+    }
+
+    // (1) + (3) — per-element parsing.
+    return list
+        .map<EducationEntry>((e) {
+          if (e is Map) {
+            return EducationEntry.fromJson(Map<String, dynamic>.from(e));
+          }
+          return EducationEntry.parseFromLine(e?.toString() ?? '');
+        })
+        .where((e) => !e.isEmpty)
+        .toList(growable: false);
+  }
 }
 
 /// 帳號（demo 用：只保留 email 與登入時間，密碼不存）
@@ -433,15 +513,7 @@ class UserProfile {
       goals: List<String>.from((j['goals'] as List?) ?? const []),
       interests: List<String>.from((j['interests'] as List?) ?? const []),
       experiences: List<String>.from((j['experiences'] as List?) ?? const []),
-      educationItems: ((j['educationItems'] as List?) ?? const [])
-          .map((e) {
-            if (e is Map) {
-              return EducationEntry.fromJson(Map<String, dynamic>.from(e));
-            }
-            // 兼容舊格式：字串就 best-effort 解析
-            return EducationEntry.parseFromLine(e?.toString() ?? '');
-          })
-          .where((e) => !e.isEmpty)
+      educationItems: EducationEntry.parseListJson(j['educationItems'])
           .toList(),
       concerns: (j['concerns'] as String?) ?? '',
       startupInterest: j['startupInterest'] == true,

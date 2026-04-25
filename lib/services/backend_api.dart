@@ -514,15 +514,7 @@ class BackendApi {
       experiences: List<String>.from(
         (j['experiences'] as List?) ?? fallback.experiences,
       ),
-      educationItems: ((j['educationItems'] as List?) ?? const [])
-          .map((e) {
-            if (e is Map) {
-              return EducationEntry.fromJson(Map<String, dynamic>.from(e));
-            }
-            return EducationEntry.parseFromLine(e?.toString() ?? '');
-          })
-          .where((e) => !e.isEmpty)
-          .toList(),
+      educationItems: EducationEntry.parseListJson(j['educationItems']),
       concerns: (j['concerns'] as String?) ?? fallback.concerns,
       startupInterest:
           (j['startupInterest'] as bool?) ?? fallback.startupInterest,
