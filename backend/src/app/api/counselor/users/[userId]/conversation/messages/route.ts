@@ -4,6 +4,11 @@ import { withAuth, readJson } from "@/lib/route";
 import { apiError } from "@/lib/errors";
 import { store } from "@/lib/store";
 import * as db from "@/lib/db";
+import {
+  buildCounselorFaqSource,
+  ensureKnowledgeBaseSeeded,
+  upsertKnowledgeSource,
+} from "@/engines/rag";
 import type { ChatConversation, ChatMessage } from "@/types/chat";
 
 type Body = {
@@ -103,14 +108,50 @@ export const POST = withAuth<{ userId: string }>(
     conv.updatedAt = now;
     store.conversations.set(convId, conv);
 
-    // Supabase: 寫進 chat_messages，把 from_counselor 塞進 normalized
+    // Supabase: 寫進 chat_messages —
+    //   - by_counselor 用 boolean 欄位（user / 諮詢師端 UI 都會讀這個）
+    //   - normalized JSONB 仍記錄誰寫的，方便日後追蹤
     await db.insertChatMessage(targetUserId, convId, msg, {
+      byCounselor: true,
       normalized: {
         from_counselor: true,
         counselor_user_id: auth.userId,
         counselor_email: auth.email ?? "",
       },
     });
+
+    // 3) 找出這則回覆對應的「最後一則 user 訊息」當作 Q，把 Q+A 推進 RAG —
+    //    諮詢師回過的問題就直接成為 KB 的一筆 FAQ，下次相同提問 RAG 自己處理。
+    let answeredUserMsg: ChatMessage | null = null;
+    for (let i = conv.messages.length - 2; i >= 0; i--) {
+      if (conv.messages[i].role === "user") {
+        answeredUserMsg = conv.messages[i];
+        break;
+      }
+    }
+    if (answeredUserMsg) {
+      try {
+        ensureKnowledgeBaseSeeded();
+        upsertKnowledgeSource(
+          buildCounselorFaqSource({
+            question: answeredUserMsg.text,
+            answer: text,
+            // 用 message id 當 stable key —— 同一題被改過再送一次會 update 而不是堆疊。
+            caseId: `msg_${answeredUserMsg.id}`,
+            tags: ["諮詢師回覆", "歷史案例"],
+          }),
+        );
+      } catch (e) {
+        console.warn("[counselor.reply] push to KB failed:", e);
+      }
+      // 把對應的 normalized_questions 標成 resolved，諮詢師端 UI 會把這組 Q+A 淡化。
+      await db
+        .markNormalizedQuestionResolvedByMessageId(
+          answeredUserMsg.id,
+          `諮詢師 ${auth.email ?? auth.userId} 已回覆`,
+        )
+        .catch(() => {});
+    }
 
     return NextResponse.json({
       conversationId: convId,

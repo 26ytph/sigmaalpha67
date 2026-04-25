@@ -190,9 +190,33 @@ export const POST = withAuth(async (req, { auth }) => {
         persona,
         mode,
       });
-  const reply =
+  const baseReply =
     ragResult?.answer ?? geminiChat?.reply ?? fallback?.reply ?? "";
   const shouldHandoff = ragResult?.shouldHandoff ?? fallback?.shouldHandoff ?? false;
+
+  // —— RAG 沒命中（或信心很低 / 直接被判 handoff）→ 補上「已通知諮詢師」提示
+  //    並背景開一張 case，讓諮詢師收件匣看得到。 ——
+  const ragConfidence = ragResult?.confidenceScore ?? 0;
+  const ragMissed =
+    !ragResult ||
+    ragResult.retrievedChunks.length === 0 ||
+    ragConfidence < 0.24;
+  const needsHandoff = shouldHandoff || ragMissed;
+  let reply = baseReply;
+  if (needsHandoff) {
+    const followUp = pickFollowUp(body.message);
+    reply =
+      `${baseReply}\n\n` +
+      `📌 這題我目前沒辦法精確回答 — 已通知諮詢師，你可以等他們接手回覆。\n` +
+      (followUp ? `如果方便，可以先補一些細節讓我先幫你整理：${followUp}` : "");
+    autoCreateCounselorCaseInBackground({
+      userId: auth.userId,
+      conversationId: convId,
+      fromMessageId: userMsg.id,
+      userQuestion: body.message,
+    });
+  }
+
   const tokensUsed = ragResult
     ? Math.min(1800, 180 + body.message.length * 2 + ragResult.answer.length * 2)
     : geminiChat
@@ -272,6 +296,73 @@ export const POST = withAuth(async (req, { auth }) => {
       chatProvider === "local" && !ragResult ? lastGeminiChatError.value : null,
   });
 });
+
+/**
+ * RAG 沒命中時：回給使用者的追問句，盡量讓 AI 順便繼續收集細節，
+ * 諮詢師接手時就能看到比較完整的脈絡。順序由問題的字面線索決定。
+ */
+function pickFollowUp(question: string): string {
+  const q = question.toLowerCase();
+  if (/補助|津貼|貸款|申請/.test(q)) {
+    return "你的年齡 / 身分 / 設籍縣市，以及希望申請哪一類資源（職涯／創業／實習）？";
+  }
+  if (/履歷|cv|面試/.test(q)) {
+    return "你最想調整哪一段（學歷、實習、專案）？想投的職位類型大概是什麼？";
+  }
+  if (/創業|青創|商業/.test(q)) {
+    return "目前是想法階段、有原型還是已經在營運？資金需求大概多少？";
+  }
+  if (/實習|工讀/.test(q)) {
+    return "你想實習的領域、希望的時段（暑期 / 學期間），以及目前學校 / 年級？";
+  }
+  if (/迷惘|方向|不知道/.test(q)) {
+    return "現在最讓你卡住的是哪一段（科系、興趣、家裡期待、能力盤點）？最近有什麼讓你猶豫的決定？";
+  }
+  return "可以多給一點背景嗎？例如目前階段、目標時程、已經試過什麼？";
+}
+
+/**
+ * 不 await — RAG 沒命中或被判要 handoff 時，背景幫使用者開一張 case，
+ * 諮詢師端的個案列表就能看到「待處理」。失敗只 log。
+ */
+function autoCreateCounselorCaseInBackground(opts: {
+  userId: string;
+  conversationId: string;
+  fromMessageId: string;
+  userQuestion: string;
+}) {
+  void (async () => {
+    try {
+      const profile = store.profiles.get(opts.userId) ?? null;
+      const persona = store.personas.get(opts.userId) ?? null;
+      // 同一個 user msg 不重複開 case（reload 重送也只會留一張）。
+      for (const existing of store.cases.values()) {
+        if (
+          existing.userId === opts.userId &&
+          existing.fromMessageId === opts.fromMessageId
+        ) {
+          return;
+        }
+      }
+      const { buildCounselorBrief } = await import("@/engines/counselorBrief");
+      const { normalizeQuestion } = await import("@/engines/intentNormalizer");
+      const { buildSwipeSummary } = await import("@/lib/swipeSummary");
+      const c = buildCounselorBrief({
+        userId: opts.userId,
+        profile,
+        persona,
+        swipeSummary: buildSwipeSummary(store.swipes.get(opts.userId) ?? []),
+        userQuestion: opts.userQuestion,
+        normalized: normalizeQuestion(opts.userQuestion),
+        fromMessageId: opts.fromMessageId,
+        conversationId: opts.conversationId,
+      });
+      store.cases.set(c.id, c);
+    } catch (e) {
+      console.warn("[autoCase] background create failed:", e);
+    }
+  })();
+}
 
 /**
  * 不 await — 讓 chat 回覆先送回 client，背景再算 insight。

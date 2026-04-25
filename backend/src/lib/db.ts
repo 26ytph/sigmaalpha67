@@ -369,6 +369,32 @@ export async function insertChatMessage(
   if (error) console.warn("[db] insertChatMessage failed:", error.message);
 }
 
+/**
+ * 把某個使用者訊息對應的 normalized_questions row 標成已解決（諮詢師回完了）。
+ * 該 user msg 沒有 normalized row 時就 noop — 表示是 KB 直接命中那條，
+ * 之後同樣的問題以 KB 為準。
+ */
+export async function markNormalizedQuestionResolvedByMessageId(
+  userMsgId: string,
+  reason: string,
+): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return;
+  const { error } = await supabase
+    .from("normalized_questions")
+    .update({
+      resolved: true,
+      resolved_reason: reason,
+    })
+    .eq("message_id", userMsgId);
+  if (error) {
+    console.warn(
+      "[db] markNormalizedQuestionResolvedByMessageId failed:",
+      error.message,
+    );
+  }
+}
+
 /** 依 chat_messages.id 反查它所在的 conversation_id（限該 user 自己）。 */
 export async function findConversationIdByMessageId(
   userId: string,
@@ -678,20 +704,47 @@ export async function fetchConversationMessages(
 
   const { data: msgRows, error: msgErr } = await supabase
     .from("chat_messages")
-    .select("id, sender, content, by_counselor, created_at")
+    .select("id, sender, content, by_counselor, normalized, created_at")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: true });
   if (msgErr) {
     console.warn("[db] fetchConversationMessages failed:", msgErr.message);
     return null;
   }
-  const messages: ChatMessage[] = (msgRows ?? []).map((m) => ({
-    id: m.id as string,
-    role: (m.sender as "user" | "assistant") ?? "assistant",
-    text: (m.content as string) ?? "",
-    byCounselor: m.by_counselor === true,
-    createdAt: (m.created_at as string) ?? new Date().toISOString(),
-  }));
+
+  // 額外把這段對話裡每一題 user msg 對應的 normalized_questions.resolved 取出來，
+  // 諮詢師端就能把「AI 已經處理掉」的問答整組打上「已完成」並淡化。
+  const userMsgIds = (msgRows ?? [])
+    .filter((m) => (m.sender as string) === "user")
+    .map((m) => m.id as string);
+  const resolvedSet = new Set<string>();
+  if (userMsgIds.length > 0) {
+    const { data: nqRows } = await supabase
+      .from("normalized_questions")
+      .select("message_id, resolved")
+      .in("message_id", userMsgIds);
+    for (const r of nqRows ?? []) {
+      if (r.resolved === true && r.message_id) {
+        resolvedSet.add(r.message_id as string);
+      }
+    }
+  }
+
+  const messages: ChatMessage[] = (msgRows ?? []).map((m) => {
+    // 1) 直接讀 by_counselor 欄位；2) 兼容舊資料 — normalized JSONB 裡可能塞 from_counselor
+    const normalized = m.normalized as { from_counselor?: unknown } | null;
+    const fromCounselor =
+      m.by_counselor === true ||
+      (normalized && normalized.from_counselor === true);
+    return {
+      id: m.id as string,
+      role: (m.sender as "user" | "assistant") ?? "assistant",
+      text: (m.content as string) ?? "",
+      fromCounselor: fromCounselor === true,
+      resolved: resolvedSet.has(m.id as string),
+      createdAt: (m.created_at as string) ?? new Date().toISOString(),
+    };
+  });
   return {
     id: convRow.id as string,
     userId,

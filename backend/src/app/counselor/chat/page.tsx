@@ -18,6 +18,8 @@ type RemoteMessage = {
   text: string;
   createdAt: string;
   fromCounselor?: boolean;
+  /** user msg 對應的 normalized_questions.resolved — true = AI 已處理，UI 會淡化。 */
+  resolved?: boolean;
 };
 
 type ConversationResponse = {
@@ -496,9 +498,29 @@ export default function CounselorChatPage() {
                   gap: 10,
                 }}
               >
-                {conv.messages.map((m) => (
-                  <MessageBubble key={m.id} m={m} />
-                ))}
+                {conv.messages.map((m, idx) => {
+                  // 若 user msg 被標 resolved，將同組 (此 user 訊息 + 後面 AI 回覆) 一起淡化 +
+                  // 顯示「已完成」徽章；遇到下一個 user msg 就停止傳染。
+                  let inResolvedPair = false;
+                  if (m.role === "user") {
+                    inResolvedPair = m.resolved === true;
+                  } else if (!m.fromCounselor) {
+                    for (let i = idx - 1; i >= 0; i--) {
+                      const prev = conv.messages[i];
+                      if (prev.role === "user") {
+                        inResolvedPair = prev.resolved === true;
+                        break;
+                      }
+                    }
+                  }
+                  return (
+                    <MessageBubble
+                      key={m.id}
+                      m={m}
+                      dimmed={inResolvedPair}
+                    />
+                  );
+                })}
               </div>
             )}
           </div>
@@ -653,7 +675,13 @@ function Avatar({ name, active }: { name: string; active: boolean }) {
   );
 }
 
-function MessageBubble({ m }: { m: RemoteMessage }) {
+function MessageBubble({
+  m,
+  dimmed = false,
+}: {
+  m: RemoteMessage;
+  dimmed?: boolean;
+}) {
   const fromUser = m.role === "user";
   const fromCounselor = m.fromCounselor === true;
   const time = (() => {
@@ -671,14 +699,26 @@ function MessageBubble({ m }: { m: RemoteMessage }) {
   const fg = fromUser ? colors.textPrimary : "#fff";
   const label = fromUser ? "個案" : fromCounselor ? "我（諮詢師）" : "AI";
 
+  // 已被 AI / RAG 處理掉的 Q+A 整組淡化，諮詢師一眼能跳過。
+  const containerOpacity = dimmed ? 0.45 : 1;
+
   return (
     <div
       style={{
         display: "flex",
         flexDirection: "column",
         alignItems: fromUser ? "flex-start" : "flex-end",
+        opacity: containerOpacity,
       }}
     >
+      {/* 來源徽章 — 三種來源各自一個明顯色塊，諮詢師看一眼就分得出 AI / 真人 */}
+      {!fromUser && (
+        <SourcePill
+          kind={fromCounselor ? "counselor" : "ai"}
+          marginSide="right"
+        />
+      )}
+      {fromUser && dimmed && <ResolvedPill marginSide="left" />}
       <div
         style={{
           maxWidth: "82%",
@@ -693,6 +733,8 @@ function MessageBubble({ m }: { m: RemoteMessage }) {
           whiteSpace: "pre-wrap",
           wordBreak: "break-word",
           boxShadow: fromUser ? "none" : shadows.soft,
+          // 諮詢師自己的訊息再多一條深色左邊條，跟 AI 漸層做雙重區分
+          borderLeft: fromCounselor ? "3px solid #4338CA" : undefined,
         }}
       >
         {m.text}
@@ -708,6 +750,56 @@ function MessageBubble({ m }: { m: RemoteMessage }) {
         {label} · {time}
       </div>
     </div>
+  );
+}
+
+function SourcePill({
+  kind,
+  marginSide,
+}: {
+  kind: "ai" | "counselor";
+  marginSide: "left" | "right";
+}) {
+  const isCounselor = kind === "counselor";
+  return (
+    <span
+      style={{
+        alignSelf: marginSide === "right" ? "flex-end" : "flex-start",
+        marginBottom: 4,
+        padding: "2px 8px",
+        borderRadius: 999,
+        fontSize: 10,
+        fontWeight: 800,
+        letterSpacing: 0.4,
+        color: "#fff",
+        background: isCounselor
+          ? "linear-gradient(135deg,#6366F1,#4338CA)"
+          : "linear-gradient(135deg,#F472B6,#FB7185)",
+      }}
+    >
+      {isCounselor ? "👤 諮詢師回覆" : "🤖 AI 自動回覆"}
+    </span>
+  );
+}
+
+function ResolvedPill({ marginSide }: { marginSide: "left" | "right" }) {
+  return (
+    <span
+      style={{
+        alignSelf: marginSide === "right" ? "flex-end" : "flex-start",
+        marginBottom: 4,
+        padding: "2px 8px",
+        borderRadius: 999,
+        fontSize: 10,
+        fontWeight: 800,
+        letterSpacing: 0.4,
+        color: "#166534",
+        background: "#DCFCE7",
+        border: "1px solid #86EFAC",
+      }}
+    >
+      ✅ 已完成 · AI 處理
+    </span>
   );
 }
 
