@@ -1,6 +1,7 @@
 import 'package:flutter/cupertino.dart';
 
 import '../models/models.dart';
+import '../utils/theme.dart';
 
 int _stableHue(String s) {
   var h = 0;
@@ -10,6 +11,8 @@ int _stableHue(String s) {
   return h;
 }
 
+/// 交友軟體風的職位卡：上半佔比更大、漸層更飽和；底部有半透明黑漸層讓字更易讀；
+/// 標題改為大字 + 標籤分別呈現，類似 Tinder Profile 卡。
 class ExplorePhotoCard extends StatelessWidget {
   const ExplorePhotoCard({super.key, required this.role});
 
@@ -18,27 +21,20 @@ class ExplorePhotoCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final hue = _stableHue(role.id) % 360;
-    final subtitle = role.tags.isNotEmpty ? role.tags.first.wireName : 'career';
+    final mainTag = role.tags.isNotEmpty ? role.tags.first.label : '職涯';
 
     return Container(
       decoration: BoxDecoration(
         color: CupertinoColors.white,
-        borderRadius: BorderRadius.circular(28),
-        border: Border.all(color: const Color(0x1A000000)),
-        boxShadow: const [
-          BoxShadow(
-            blurRadius: 40,
-            offset: Offset(0, 24),
-            color: Color(0x24020617),
-          ),
-        ],
+        borderRadius: BorderRadius.circular(AppRadii.xxl),
+        boxShadow: AppColors.shadow,
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           AspectRatio(
-            aspectRatio: 2,
+            aspectRatio: 1.05,
             child: Stack(
               fit: StackFit.expand,
               children: [
@@ -48,12 +44,14 @@ class ExplorePhotoCard extends StatelessWidget {
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                       colors: [
-                        HSVColor.fromAHSV(1, hue.toDouble(), 0.35, 0.95).toColor(),
-                        HSVColor.fromAHSV(1, (hue + 40) % 360.0, 0.45, 0.88).toColor(),
+                        HSVColor.fromAHSV(1, hue.toDouble(), 0.55, 0.98).toColor(),
+                        HSVColor.fromAHSV(1, (hue + 60) % 360.0, 0.65, 0.85).toColor(),
+                        HSVColor.fromAHSV(1, (hue + 120) % 360.0, 0.55, 0.78).toColor(),
                       ],
                     ),
                   ),
                 ),
+                // 底部黑色漸層（讓白字易讀）
                 Container(
                   decoration: const BoxDecoration(
                     gradient: LinearGradient(
@@ -61,74 +59,115 @@ class ExplorePhotoCard extends StatelessWidget {
                       end: Alignment.bottomCenter,
                       colors: [
                         Color(0x00000000),
-                        Color(0x66F4F4F5),
+                        Color(0x00000000),
+                        Color(0x66000000),
+                        Color(0xCC000000),
                       ],
+                      stops: [0.0, 0.45, 0.78, 1.0],
                     ),
                   ),
                 ),
+                // 中央職位 icon（裝飾）
                 Center(
                   child: Icon(
                     CupertinoIcons.briefcase_fill,
-                    size: 72,
-                    color: CupertinoColors.white.withValues(alpha: 0.9),
+                    size: 96,
+                    color: CupertinoColors.white.withValues(alpha: 0.5),
+                  ),
+                ),
+                // 右上角 #tag 徽章
+                Positioned(
+                  top: 14,
+                  right: 14,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: CupertinoColors.white.withValues(alpha: 0.92),
+                      borderRadius: BorderRadius.circular(AppRadii.pill),
+                    ),
+                    child: Text(
+                      '#$mainTag',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.brandStart,
+                      ),
+                    ),
+                  ),
+                ),
+                // 左下：標題與 tagline 疊在卡片照片上
+                Positioned(
+                  left: 18,
+                  right: 18,
+                  bottom: 16,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        role.title,
+                        style: const TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -0.4,
+                          color: CupertinoColors.white,
+                          shadows: [
+                            Shadow(
+                              blurRadius: 8,
+                              offset: Offset(0, 2),
+                              color: Color(0x80000000),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        role.tagline,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13,
+                          height: 1.4,
+                          fontWeight: FontWeight.w600,
+                          color: CupertinoColors.white.withValues(alpha: 0.95),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
             ),
           ),
+          // 下半：技能 / 日常工作（兩欄）
           Container(
-            padding: const EdgeInsets.all(20),
-            decoration: const BoxDecoration(
-              color: Color(0xCCF4F4F5),
-              border: Border(top: BorderSide(color: Color(0x1A000000))),
-            ),
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+            decoration: const BoxDecoration(color: AppColors.surface),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  role.title,
-                  style: const TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: -0.3,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  role.tagline,
-                  style: const TextStyle(
-                    fontSize: 14,
-                    height: 1.4,
-                    color: Color(0xFF3F3F46),
-                  ),
-                ),
-                const SizedBox(height: 12),
                 Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
+                  spacing: 6,
+                  runSpacing: 6,
                   children: [
-                    ...role.tags.map(
-                      (t) => _TagChip(label: t.wireName),
-                    ),
-                    _TagChip(label: subtitle),
+                    for (final t in role.tags) _TagChip(label: '#${t.label}'),
                   ],
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 14),
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Expanded(
                       child: _BulletsCard(
                         title: '代表技能',
-                        accent: const Color(0xB30EA5E9),
+                        accent: AppColors.accentIndigo,
                         items: role.skills.take(5).toList(),
                       ),
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 10),
                     Expanded(
                       child: _BulletsCard(
                         title: '日常工作',
-                        accent: const Color(0xB3D946EF),
+                        accent: AppColors.brandStart,
                         items: role.dayToDay.take(5).toList(),
                       ),
                     ),
@@ -151,15 +190,18 @@ class _TagChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
-        color: CupertinoColors.white,
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: const Color(0x1A000000)),
+        color: AppColors.bgAlt,
+        borderRadius: BorderRadius.circular(AppRadii.pill),
       ),
       child: Text(
         label,
-        style: const TextStyle(fontSize: 12, color: Color(0xFF3F3F46)),
+        style: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          color: AppColors.brandStart,
+        ),
       ),
     );
   }
@@ -179,28 +221,27 @@ class _BulletsCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: CupertinoColors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0x1A000000)),
+        color: AppColors.surfaceMuted,
+        borderRadius: BorderRadius.circular(AppRadii.md),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
             title,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 11,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w800,
               letterSpacing: 0.6,
-              color: Color(0xFF52525B),
+              color: accent,
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
           ...items.map(
             (s) => Padding(
-              padding: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.only(bottom: 6),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -209,14 +250,20 @@ class _BulletsCard extends StatelessWidget {
                     child: Container(
                       width: 5,
                       height: 5,
-                      decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
+                      decoration: BoxDecoration(
+                          color: accent, shape: BoxShape.circle),
                     ),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
                       s,
-                      style: const TextStyle(fontSize: 13, height: 1.35, color: Color(0xFF18181B)),
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        height: 1.35,
+                        color: AppColors.textPrimary,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                 ],

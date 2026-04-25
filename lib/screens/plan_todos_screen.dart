@@ -5,6 +5,7 @@ import '../logic/generate_plan.dart';
 import '../models/models.dart';
 import '../services/app_repository.dart';
 import '../utils/plan_todo_keys.dart';
+import '../utils/theme.dart';
 
 class PlanTodosScreen extends StatefulWidget {
   const PlanTodosScreen({
@@ -113,7 +114,7 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
     final weekProg = activeWeekData == null ? (done: 0, total: 0, pct: 0) : _weekProgress(activeWeekData);
 
     return CupertinoPageScaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
+      backgroundColor: const Color(0xFFFFF5F8),
       navigationBar: const CupertinoNavigationBar(
         middle: Text('週任務清單'),
       ),
@@ -148,17 +149,21 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            for (final w in plan.weeks)
-                              _WeekProgressSelectorTile(
-                                week: w,
-                                progress: _weekProgress(w),
-                                selected: _activeWeek == w.week,
-                                onTap: () => setState(() => _activeWeek = w.week),
-                              ),
-                          ],
+                        SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          padding: const EdgeInsets.only(bottom: 4),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              for (final w in plan.weeks)
+                                _WeekProgressSelectorTile(
+                                  week: w,
+                                  progress: _weekProgress(w),
+                                  selected: _activeWeek == w.week,
+                                  onTap: () => setState(() => _activeWeek = w.week),
+                                ),
+                            ],
+                          ),
                         ),
                         if (activeWeekData != null) ...[
                           const SizedBox(height: 14),
@@ -272,6 +277,13 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
                                   },
                                 ),
                                 const SizedBox(height: 16),
+                                _WeekCoursesPanel(
+                                  week: activeWeekData.week,
+                                  courses: plan.courses
+                                      .where((c) => c.spansWeek(activeWeekData!.week))
+                                      .toList(),
+                                ),
+                                const SizedBox(height: 16),
                                 Container(
                                   padding: const EdgeInsets.all(14),
                                   decoration: BoxDecoration(
@@ -333,7 +345,6 @@ class _WeekProgressSelectorTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final v = progress.total == 0 ? 0.0 : progress.done / progress.total;
     return Padding(
       padding: const EdgeInsets.only(bottom: 10, right: 10),
       child: CupertinoButton(
@@ -515,6 +526,190 @@ class _TodoRow extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 顯示「跨第 N 週」的推薦課程／證照（同一筆會出現在多個週數）
+class _WeekCoursesPanel extends StatelessWidget {
+  const _WeekCoursesPanel({required this.week, required this.courses});
+
+  final int week;
+  final List<RecommendedCourse> courses;
+
+  @override
+  Widget build(BuildContext context) {
+    if (courses.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColors.bg,
+          borderRadius: BorderRadius.circular(AppRadii.md),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: const Row(
+          children: [
+            Icon(CupertinoIcons.book,
+                size: 14, color: AppColors.textTertiary),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '本週沒有特別推薦課程，先把任務做完即可。',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: AppColors.textTertiary,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadii.md),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(CupertinoIcons.book_fill,
+                  size: 14, color: AppColors.iosBlue),
+              const SizedBox(width: 6),
+              const Text(
+                '本週推薦課程／證照',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.4,
+                  color: AppColors.iosBlue,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '${courses.length} 項',
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: AppColors.textTertiary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          for (var i = 0; i < courses.length; i++) ...[
+            if (i > 0)
+              Container(
+                margin: const EdgeInsets.symmetric(vertical: 8),
+                height: 1,
+                color: AppColors.border,
+              ),
+            _CourseTile(course: courses[i], currentWeek: week),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _CourseTile extends StatelessWidget {
+  const _CourseTile({required this.course, required this.currentWeek});
+
+  final RecommendedCourse course;
+  final int currentWeek;
+
+  @override
+  Widget build(BuildContext context) {
+    final isCert = course.type == '證照';
+    final tagColor = isCert ? AppColors.iosOrange : AppColors.iosBlue;
+    final spanLabel = course.weeks.length > 1
+        ? '第 ${course.weeks.first}–${course.weeks.last} 週'
+        : '第 ${course.weeks.first} 週';
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 30,
+          height: 30,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: tagColor.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(7),
+          ),
+          child: Icon(
+            isCert ? CupertinoIcons.rosette : CupertinoIcons.play_rectangle,
+            size: 14,
+            color: tagColor,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 6, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: tagColor.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      course.type,
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: tagColor,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    spanLabel,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: AppColors.textTertiary,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                course.title,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                course.provider,
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: AppColors.textTertiary,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                course.detail,
+                style: const TextStyle(
+                  fontSize: 12,
+                  height: 1.5,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

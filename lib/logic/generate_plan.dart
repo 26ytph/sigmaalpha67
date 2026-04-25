@@ -26,6 +26,27 @@ class TagScore {
   final int score;
 }
 
+/// 推薦課程／證照（同一筆可橫跨多週）
+class RecommendedCourse {
+  const RecommendedCourse({
+    required this.id,
+    required this.title,
+    required this.provider,
+    required this.type, // '課程' | '證照'
+    required this.weeks,
+    required this.detail,
+  });
+
+  final String id;
+  final String title;
+  final String provider;
+  final String type;
+  final List<int> weeks;
+  final String detail;
+
+  bool spansWeek(int w) => weeks.contains(w);
+}
+
 class GeneratedPlan {
   const GeneratedPlan({
     required this.basedOnLikedRoleIds,
@@ -33,6 +54,7 @@ class GeneratedPlan {
     required this.recommendedRoles,
     required this.headline,
     required this.weeks,
+    required this.courses,
   });
 
   final List<RoleId> basedOnLikedRoleIds;
@@ -40,6 +62,7 @@ class GeneratedPlan {
   final List<CareerRole> recommendedRoles;
   final String headline;
   final List<PlanWeek> weeks;
+  final List<RecommendedCourse> courses;
 }
 
 List<TagScore> topTagsFromRoleIds(List<RoleId> roleIds) {
@@ -384,6 +407,262 @@ List<PlanWeek> baseWeeks(RoleTag? top) {
   return common.toList();
 }
 
+/// 假資料課程／證照清單（同一筆可橫跨多週）
+List<RecommendedCourse> _coursesFor(RoleTag? top) {
+  // 共通類（每個方向都會推）
+  final common = <RecommendedCourse>[
+    RecommendedCourse(
+      id: 'c_common_1',
+      title: 'LinkedIn Learning：學習如何學習',
+      provider: 'LinkedIn Learning',
+      type: '課程',
+      weeks: const [1, 2],
+      detail: '建立每天 30–60 分鐘固定學習時段的方法論。',
+    ),
+    RecommendedCourse(
+      id: 'c_common_2',
+      title: 'Notion 個人作品集模板（Hahow）',
+      provider: 'Hahow',
+      type: '課程',
+      weeks: const [2, 3],
+      detail: '把筆記與小作品整理成可分享的 Notion 頁面。',
+    ),
+  ];
+
+  if (top == null) return common;
+
+  switch (top) {
+    case RoleTag.engineering:
+      return [
+        ...common,
+        const RecommendedCourse(
+          id: 'c_eng_ts',
+          title: 'TypeScript 官方 Handbook（自學）',
+          provider: '官方文件',
+          type: '課程',
+          weeks: [3, 4],
+          detail: '挑 5–8 章邊做小範例邊讀，先讀型別系統、模組、泛型。',
+        ),
+        const RecommendedCourse(
+          id: 'c_eng_fso',
+          title: 'Full Stack Open（赫爾辛基大學）',
+          provider: 'University of Helsinki',
+          type: '課程',
+          weeks: [4, 5, 6],
+          detail: '一條龍學 React + Node + DB，部分章節可直接當作品集 demo。',
+        ),
+        const RecommendedCourse(
+          id: 'c_eng_aws',
+          title: 'AWS Certified Cloud Practitioner',
+          provider: 'AWS',
+          type: '證照',
+          weeks: [5, 6],
+          detail: '面試常被問到雲端基礎；有證照在履歷上會加分。',
+        ),
+      ];
+    case RoleTag.data:
+      return [
+        ...common,
+        const RecommendedCourse(
+          id: 'c_data_mode',
+          title: 'Mode Analytics SQL Tutorial',
+          provider: 'Mode',
+          type: '課程',
+          weeks: [3, 4],
+          detail: '從 SELECT 到 window function，免費題庫可邊做邊學。',
+        ),
+        const RecommendedCourse(
+          id: 'c_data_gda',
+          title: 'Google Data Analytics 證照',
+          provider: 'Coursera × Google',
+          type: '證照',
+          weeks: [4, 5, 6],
+          detail: '8 門課循序漸進，含 R / Tableau / SQL 全套，可做專題。',
+        ),
+        const RecommendedCourse(
+          id: 'c_data_kaggle',
+          title: 'Kaggle Pandas 微課程',
+          provider: 'Kaggle',
+          type: '課程',
+          weeks: [5, 6],
+          detail: '學完直接挑一個 Kaggle 資料集做完整分析報告。',
+        ),
+      ];
+    case RoleTag.product:
+      return [
+        ...common,
+        const RecommendedCourse(
+          id: 'c_pm_jtbd',
+          title: 'Reforge：Product Strategy（精選文章）',
+          provider: 'Reforge',
+          type: '課程',
+          weeks: [3, 4],
+          detail: '免費 newsletter 文章已能涵蓋 JTBD、Market Sizing 概念。',
+        ),
+        const RecommendedCourse(
+          id: 'c_pm_book',
+          title: 'Cracking the PM Interview（讀書會）',
+          provider: '自組讀書會',
+          type: '課程',
+          weeks: [5, 6],
+          detail: '每週讀 1 章 + 1 題模擬題；重點放在 Product Sense。',
+        ),
+        const RecommendedCourse(
+          id: 'c_pm_certified',
+          title: 'Pendo Certified Product Manager',
+          provider: 'Pendo',
+          type: '證照',
+          weeks: [6],
+          detail: '免費線上認證，履歷加一行；考試 30 分鐘。',
+        ),
+      ];
+    case RoleTag.design:
+      return [
+        ...common,
+        const RecommendedCourse(
+          id: 'c_design_gux',
+          title: 'Google UX Design 專業證照',
+          provider: 'Coursera × Google',
+          type: '證照',
+          weeks: [3, 4, 5, 6],
+          detail: '7 門課 + 3 個作品集案例；可一邊上一邊做作品。',
+        ),
+        const RecommendedCourse(
+          id: 'c_design_figma',
+          title: 'Figma 從零到 Auto Layout',
+          provider: 'Hahow / 自學',
+          type: '課程',
+          weeks: [3],
+          detail: '把週 1 訪談摘要直接做成 Wireframe → 高保真稿。',
+        ),
+        const RecommendedCourse(
+          id: 'c_design_md',
+          title: 'Material Design 3 官方文件',
+          provider: 'Google',
+          type: '課程',
+          weeks: [4, 5],
+          detail: '挑 2 個 token / pattern 真的套到自己的 prototype。',
+        ),
+      ];
+    case RoleTag.marketing:
+      return [
+        ...common,
+        const RecommendedCourse(
+          id: 'c_mkt_ga',
+          title: 'Google Analytics 認證（GA4）',
+          provider: 'Google Skillshop',
+          type: '證照',
+          weeks: [4, 5],
+          detail: '免費，考試約 90 分鐘；履歷面試常加分。',
+        ),
+        const RecommendedCourse(
+          id: 'c_mkt_meta',
+          title: 'Meta Blueprint：Digital Marketing Associate',
+          provider: 'Meta',
+          type: '證照',
+          weeks: [4, 5, 6],
+          detail: '臉書廣告投放與成效分析；含投放實作練習。',
+        ),
+        const RecommendedCourse(
+          id: 'c_mkt_growth',
+          title: '《Growth Hacker Marketing》閱讀心得',
+          provider: '讀書會',
+          type: '課程',
+          weeks: [5, 6],
+          detail: '把書中漏斗概念套到自己練習投放的素材上。',
+        ),
+      ];
+    case RoleTag.sales:
+      return [
+        ...common,
+        const RecommendedCourse(
+          id: 'c_sales_hubspot',
+          title: 'HubSpot Sales Software 認證',
+          provider: 'HubSpot Academy',
+          type: '證照',
+          weeks: [4, 5, 6],
+          detail: '免費；含 inbound / outbound 流程設計。',
+        ),
+        const RecommendedCourse(
+          id: 'c_sales_spin',
+          title: 'SPIN Selling 重點導讀',
+          provider: '自學 / 讀書會',
+          type: '課程',
+          weeks: [3, 4],
+          detail: '掌握 4 種提問結構，套到自己模擬的客戶腳本。',
+        ),
+      ];
+    case RoleTag.people:
+      return [
+        ...common,
+        const RecommendedCourse(
+          id: 'c_hr_shrm',
+          title: 'SHRM-CP（人資基本認識）',
+          provider: 'SHRM',
+          type: '證照',
+          weeks: [5, 6],
+          detail: '較長期目標，可先把考試大綱當地圖規劃學習。',
+        ),
+        const RecommendedCourse(
+          id: 'c_hr_struct',
+          title: '結構化面談設計（線上工作坊）',
+          provider: '台灣人資協會',
+          type: '課程',
+          weeks: [3, 4],
+          detail: '把面談題庫整理成可重用的範本。',
+        ),
+      ];
+    case RoleTag.finance:
+      return [
+        ...common,
+        const RecommendedCourse(
+          id: 'c_fin_cfa',
+          title: 'CFA Level I 預備（自學版）',
+          provider: 'CFA Institute',
+          type: '證照',
+          weeks: [4, 5, 6],
+          detail: '長期目標；先把 Ethics 與 Quant Methods 兩章念完。',
+        ),
+        const RecommendedCourse(
+          id: 'c_fin_excel',
+          title: 'Excel 財務模型實戰（Hahow）',
+          provider: 'Hahow',
+          type: '課程',
+          weeks: [3, 4],
+          detail: '建立簡易月結模型 + 差異分析模板。',
+        ),
+      ];
+    case RoleTag.security:
+      return [
+        ...common,
+        const RecommendedCourse(
+          id: 'c_sec_thm',
+          title: 'TryHackMe：Pre-Security 路徑',
+          provider: 'TryHackMe',
+          type: '課程',
+          weeks: [3, 4],
+          detail: '免費開始；把網路與 Linux 基本功補齊。',
+        ),
+        const RecommendedCourse(
+          id: 'c_sec_secplus',
+          title: 'CompTIA Security+',
+          provider: 'CompTIA',
+          type: '證照',
+          weeks: [4, 5, 6],
+          detail: '入門資安最常被要求的證照；考試題型偏概念題。',
+        ),
+        const RecommendedCourse(
+          id: 'c_sec_owasp',
+          title: 'OWASP Top 10 線上閱讀',
+          provider: 'OWASP',
+          type: '課程',
+          weeks: [5],
+          detail: '每天讀一個弱點 + 找一個 demo 專案重現。',
+        ),
+      ];
+  }
+}
+
 GeneratedPlan generatePlan(List<RoleId> likedRoleIds) {
   final clean = likedRoleIds.toSet().toList();
   final likedRoles = roles.where((r) => clean.contains(r.id)).toList();
@@ -405,5 +684,6 @@ GeneratedPlan generatePlan(List<RoleId> likedRoleIds) {
     recommendedRoles: recommendedRoles,
     headline: pickHeadline(top),
     weeks: weeks,
+    courses: _coursesFor(top),
   );
 }
