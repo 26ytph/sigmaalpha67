@@ -18,6 +18,7 @@ export function buildCounselorBrief(opts: {
   userQuestion: string;
   normalized: NormalizedQuestion;
   fromMessageId?: string;
+  conversationId?: string;
 }): CounselorCase {
   const profile = opts.profile;
   const userBackground = [
@@ -69,6 +70,8 @@ export function buildCounselorBrief(opts: {
   return {
     id: newId("case"),
     userId: opts.userId,
+    conversationId: opts.conversationId,
+    fromMessageId: opts.fromMessageId,
     status: "waiting_for_counselor",
     urgency: opts.normalized.urgency,
     userBackground: userBackground || "（資料未填寫）",

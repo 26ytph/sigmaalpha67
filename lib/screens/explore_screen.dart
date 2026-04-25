@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart';
 
 import '../data/roles.dart';
+import '../data/startup_skills.dart';
 import '../models/models.dart';
 import '../services/app_repository.dart';
 import '../utils/theme.dart';
@@ -30,15 +31,37 @@ class ExploreScreen extends StatefulWidget {
 class _ExploreScreenState extends State<ExploreScreen> {
   late List<CareerRole> _deck;
   int _deckIdx = 0;
+  // 記住 deck 是用哪一個來源洗的，當 user 在 PersonaScreen 切換創業／求職模式時
+  // 我們可以偵測並重洗。
+  late bool _deckIsStartup;
 
   // 累積到下次 prompt 還差幾張（重啟 session 重置，避免 app 重開時被舊計數困住）
   int _sinceLastPrompt = 0;
   bool _promptOpen = false;
 
+  bool get _isStartup => widget.storage.profile.startupInterest;
+
+  List<CareerRole> _sourceDeck() => _isStartup ? startupSkills : roles;
+
   @override
   void initState() {
     super.initState();
-    _deck = [...roles]..shuffle();
+    _deckIsStartup = _isStartup;
+    _deck = [..._sourceDeck()]..shuffle();
+  }
+
+  @override
+  void didUpdateWidget(covariant ExploreScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 模式切換 → 重新洗一副新牌組（已被滑過的舊紀錄保留在 likedRoleIds）。
+    if (_isStartup != _deckIsStartup) {
+      setState(() {
+        _deckIsStartup = _isStartup;
+        _deckIdx = 0;
+        _sinceLastPrompt = 0;
+        _deck = [..._sourceDeck()]..shuffle();
+      });
+    }
   }
 
   CareerRole get _current => _deck[_deckIdx % _deck.length];
@@ -52,10 +75,12 @@ class _ExploreScreenState extends State<ExploreScreen> {
 
   void _swipe(SwipeDirection dir) {
     final role = _current;
+    // 反向：往左 = 有興趣 / 往右 = 沒興趣
+    final isLike = dir == SwipeDirection.left;
     unawaited(
       AppRepository.recordSwipe(
         cardId: role.id,
-        liked: dir == SwipeDirection.right,
+        liked: isLike,
       ),
     );
 
@@ -63,7 +88,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
       final liked = [...prev.explore.likedRoleIds];
       final disliked = [...prev.explore.dislikedRoleIds];
 
-      if (dir == SwipeDirection.right) {
+      if (isLike) {
         disliked.remove(role.id);
         if (!liked.contains(role.id)) liked.add(role.id);
       } else {
@@ -85,7 +110,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
       _sinceLastPrompt++;
       // 卡組用完一輪重新洗牌，達成「無限滑卡」
       if (_deckIdx % _deck.length == 0) {
-        _deck = [...roles]..shuffle();
+        _deck = [..._sourceDeck()]..shuffle();
       }
     });
 
@@ -154,7 +179,7 @@ class _ExploreScreenState extends State<ExploreScreen> {
     setState(() {
       _deckIdx = 0;
       _sinceLastPrompt = 0;
-      _deck = [...roles]..shuffle();
+      _deck = [..._sourceDeck()]..shuffle();
     });
   }
 
@@ -178,12 +203,12 @@ class _ExploreScreenState extends State<ExploreScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Column(
+                      Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            '興趣探索',
-                            style: TextStyle(
+                            _isStartup ? '能力探索' : '興趣探索',
+                            style: const TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
                               letterSpacing: 0.4,
@@ -192,8 +217,8 @@ class _ExploreScreenState extends State<ExploreScreen> {
                           ),
                           AppGaps.h2,
                           Text(
-                            '無限滑卡',
-                            style: TextStyle(
+                            _isStartup ? '創業技能滑卡' : '無限滑卡',
+                            style: const TextStyle(
                               fontSize: 26,
                               fontWeight: FontWeight.w700,
                               letterSpacing: -0.4,
@@ -293,21 +318,23 @@ class _ExploreScreenState extends State<ExploreScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      _RoundSwipeButton(
-                        label: 'PASS',
-                        size: 64,
-                        bg: AppColors.surface,
-                        iconColor: AppColors.iosRed,
-                        icon: CupertinoIcons.xmark,
-                        onPressed: () => _swipe(SwipeDirection.left),
-                      ),
-                      const SizedBox(width: 36),
+                      // 左 = 有興趣（LIKE） — 往左滑也是同樣意思
                       _RoundSwipeButton(
                         label: 'LIKE',
                         size: 80,
                         gradient: AppColors.brandGradient,
                         iconColor: CupertinoColors.white,
                         icon: CupertinoIcons.heart_fill,
+                        onPressed: () => _swipe(SwipeDirection.left),
+                      ),
+                      const SizedBox(width: 36),
+                      // 右 = 沒興趣（PASS） — 往右滑同步
+                      _RoundSwipeButton(
+                        label: 'PASS',
+                        size: 64,
+                        bg: AppColors.surface,
+                        iconColor: AppColors.iosRed,
+                        icon: CupertinoIcons.xmark,
                         onPressed: () => _swipe(SwipeDirection.right),
                       ),
                     ],

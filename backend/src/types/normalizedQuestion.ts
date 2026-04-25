@@ -1,6 +1,12 @@
 /**
  * Stored row for `public.normalized_questions`.
- * 只有「不在 RAG 既有知識庫」中的新問題才會被記錄。
+ *
+ * 兩種情境都會被寫入：
+ *   1) 全新問題（KB 沒命中）→ resolved = false
+ *   2) KB 命中 + 助理回答也跟 KB 既有答案夠像 → resolved = true
+ *      （諮詢師可以一眼看出「這題其實 RAG 已經自動處理了」）
+ * 而「KB 命中但答案有偏」這種 case 仍會被 store 成 resolved=false，
+ * 讓諮詢師有機會 review 是不是 KB 過時了。
  */
 export type StoredNormalizedQuestion = {
   id: string;
@@ -20,6 +26,11 @@ export type StoredNormalizedQuestion = {
   closestKbTitle: string;
   closestKbScore: number;
   thresholdUsed: number;
+  // resolved tagging
+  resolved: boolean;
+  resolvedReason: string;
+  answerScore: number;
+  closestKbAnswer: string;
   generatedBy: string;
   createdAt: string;
 };

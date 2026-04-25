@@ -840,7 +840,7 @@ class _PersonaScreenState extends State<PersonaScreen> {
               AppGaps.w10,
               Expanded(
                 child: Text(
-                  isStartup ? '切回我要求職' : '我要創業 🔥❤',
+                  isStartup ? '我要求職 🔥' : '我要創業 🔥❤',
                   style: const TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w500,

@@ -97,16 +97,6 @@ export const POST = withAuth(async (req, { auth }) => {
   const profile = body.context?.useProfile === false ? null : store.profiles.get(auth.userId) ?? null;
   const persona = store.personas.get(auth.userId) ?? null;
 
-  // —— 正規化 + tag 抽取（不 await，背景跑；RAG 已經有相似的問答就跳過儲存）——
-  refreshNormalizedQuestionInBackground({
-    userId: auth.userId,
-    conversationId: convId,
-    messageId: userMsg.id,
-    question: body.message,
-    profile,
-    persona,
-    history: conv.messages.slice(0, -1), // 不含這次的 user msg
-  });
   const ragEnabled = body.context?.useRag !== false && shouldUseRag(body.message, mode);
 
   const personaHash = persona
@@ -143,6 +133,16 @@ export const POST = withAuth(async (req, { auth }) => {
     store.conversations.set(convId, conv);
     await db.insertChatMessage(auth.userId, convId, replyMsg, {
       askedHandoff: cached.shouldHandoff,
+    });
+    refreshNormalizedQuestionInBackground({
+      userId: auth.userId,
+      conversationId: convId,
+      messageId: userMsg.id,
+      question: body.message,
+      assistantReply: cached.reply,
+      profile,
+      persona,
+      history: conv.messages.slice(0, -2),
     });
     return NextResponse.json({
       conversationId: convId,
@@ -214,6 +214,19 @@ export const POST = withAuth(async (req, { auth }) => {
   store.conversations.set(convId, conv);
   await db.insertChatMessage(auth.userId, convId, replyMsg, {
     askedHandoff: shouldHandoff,
+  });
+
+  // —— 正規化 + tag 抽取（不 await，背景跑）——
+  //    把 reply 一起帶進去 → 可以判斷「已解決」並寫到 normalized_questions。
+  refreshNormalizedQuestionInBackground({
+    userId: auth.userId,
+    conversationId: convId,
+    messageId: userMsg.id,
+    question: body.message,
+    assistantReply: reply,
+    profile,
+    persona,
+    history: conv.messages.slice(0, -2), // 不含這次的 user + assistant msg
   });
 
   // —— 每 4 則使用者訊息（即每 8 則 total）就 fire-and-forget 重算一次 insight ——
@@ -297,6 +310,7 @@ function refreshNormalizedQuestionInBackground(opts: {
   conversationId: string;
   messageId: string;
   question: string;
+  assistantReply?: string;
   profile: import("@/types/profile").Profile | null;
   persona: import("@/types/persona").Persona | null;
   history: import("@/types/chat").ChatMessage[];
@@ -305,14 +319,12 @@ function refreshNormalizedQuestionInBackground(opts: {
     try {
       const outcome = await processUserQuestion({
         question: opts.question,
+        assistantReply: opts.assistantReply,
         profile: opts.profile,
         persona: opts.persona,
         history: opts.history,
       });
-      if (!outcome.stored) {
-        // KB 已經有相似問題或空訊息 — 跳過 normalized_questions 但**仍可**累積 tag
-        return;
-      }
+      if (!outcome.stored) return;
       await db.insertNormalizedQuestion(
         opts.userId,
         opts.conversationId,

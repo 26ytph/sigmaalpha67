@@ -12,6 +12,7 @@ import type { CounselorCaseStatus } from "@/types/counselor";
 
 type Body = {
   fromMessageId?: string;
+  conversationId?: string;
   userQuestion?: string;
   normalizedQuestion?: NormalizedQuestion;
 };
@@ -21,6 +22,22 @@ export const POST = withAuth(async (req, { auth }) => {
   if (!body?.userQuestion) return apiError("bad_request", "`userQuestion` is required.");
   const normalized = body.normalizedQuestion ?? normalizeQuestion(body.userQuestion);
   const summary = buildSwipeSummary(store.swipes.get(auth.userId) ?? []);
+
+  // 嘗試把 conversationId 釘到 case 上 — 諮詢師 reply 時就知道要塞回哪條對話。
+  // 順序：1. body 帶來的最準  2. fromMessageId 反查  3. 該 user 最近的 conversation
+  let conversationId = body.conversationId;
+  if (!conversationId && body.fromMessageId) {
+    const found = await db.findConversationIdByMessageId(
+      auth.userId,
+      body.fromMessageId,
+    );
+    if (found) conversationId = found;
+  }
+  if (!conversationId) {
+    const list = await db.listConversations(auth.userId, 1);
+    if (list[0]) conversationId = list[0].id;
+  }
+
   const c = buildCounselorBrief({
     userId: auth.userId,
     profile: store.profiles.get(auth.userId) ?? null,
@@ -29,6 +46,7 @@ export const POST = withAuth(async (req, { auth }) => {
     userQuestion: body.userQuestion,
     normalized,
     fromMessageId: body.fromMessageId,
+    conversationId,
   });
   store.cases.set(c.id, c);
 
