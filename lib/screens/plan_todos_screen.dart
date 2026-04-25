@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
+import '../data/startup_skills.dart';
 import '../logic/generate_plan.dart';
 import '../models/models.dart';
 import '../services/app_repository.dart';
@@ -29,14 +30,14 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
   @override
   void initState() {
     super.initState();
-    final plan = generatePlan(widget.storage.explore.likedRoleIds);
+    final plan = generatePlan(widget.storage.explore.likedRoleIds, mode: widget.storage.profile.mode);
     _activeWeek = plan.weeks.isNotEmpty ? plan.weeks.first.week : 1;
   }
 
   @override
   void didUpdateWidget(covariant PlanTodosScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final plan = generatePlan(widget.storage.explore.likedRoleIds);
+    final plan = generatePlan(widget.storage.explore.likedRoleIds, mode: widget.storage.profile.mode);
     if (plan.weeks.isEmpty) return;
     final first = plan.weeks.first.week;
     if (!plan.weeks.any((w) => w.week == _activeWeek)) {
@@ -92,6 +93,20 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
     });
   }
 
+  /// 創業模式：使用者在「探索」滑卡 LIKE 過的技能會展開成這個 key 集合的待辦。
+  /// key 不綁週數，跨週共享狀態。
+  static String startupSkillTodoKey(String skillId, int idx) =>
+      'skill:$skillId:$idx';
+
+  void _toggleStartupSkillTodo(String skillId, int idx) {
+    final key = startupSkillTodoKey(skillId, idx);
+    _persist((prev) {
+      final nextTodos = Map<String, bool>.from(prev.planTodos);
+      nextTodos[key] = !(nextTodos[key] ?? false);
+      return prev.copyWith(planTodos: nextTodos);
+    });
+  }
+
   void _setWeekNote(int week, String note) {
     final key = '$week';
     unawaited(AppRepository.setWeekNote(week: week, note: note));
@@ -117,7 +132,14 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final plan = generatePlan(widget.storage.explore.likedRoleIds);
+    final isStartup = widget.storage.profile.mode == AppMode.startup;
+    final plan = generatePlan(widget.storage.explore.likedRoleIds, mode: widget.storage.profile.mode);
+    final likedStartupSkills = isStartup
+        ? widget.storage.explore.likedRoleIds
+              .map(findStartupSkillById)
+              .whereType<CareerRole>()
+              .toList()
+        : const <CareerRole>[];
 
     PlanWeek? activeWeekData;
     for (final w in plan.weeks) {
@@ -138,19 +160,24 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
       // AppShell's IndexedStack alongside other CupertinoNavigationBars;
       // sharing the default hero tag with them crashes the iOS back-swipe
       // gesture when popping a route pushed over AppShell.
-      navigationBar: const CupertinoNavigationBar(
+      navigationBar: CupertinoNavigationBar(
         transitionBetweenRoutes: false,
-        middle: Text('週任務清單'),
+        middle: Text(isStartup ? '創業任務清單' : '週任務清單'),
       ),
       child: SafeArea(
         child: plan.weeks.isEmpty
-            ? const Center(
+            ? Center(
                 child: Padding(
-                  padding: EdgeInsets.all(24),
+                  padding: const EdgeInsets.all(24),
                   child: Text(
-                    '尚無週計畫。請先在探索頁選擇感興趣的職位。',
+                    isStartup
+                        ? '尚無啟動清單。請先在探索頁滑卡，挑出你想練的創業能力。'
+                        : '尚無週計畫。請先在探索頁選擇感興趣的職位。',
                     textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 15, color: Color(0xFF52525B)),
+                    style: const TextStyle(
+                      fontSize: 15,
+                      color: Color(0xFF52525B),
+                    ),
                   ),
                 ),
               )
@@ -166,18 +193,28 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  const Text(
-                    '勾選每週目標、資源與產出，並記錄週心得。',
-                    style: TextStyle(
+                  Text(
+                    isStartup
+                        ? '邊驗證、邊行動：每週勾完待辦，最後一週就能去 pitch。'
+                        : '勾選每週目標、資源與產出，並記錄週心得。',
+                    style: const TextStyle(
                       fontSize: 13,
                       height: 1.45,
                       color: Color(0xFF3F3F46),
                     ),
                   ),
                   const SizedBox(height: 18),
+                  if (likedStartupSkills.isNotEmpty) ...[
+                    _StartupLikedSkillsSection(
+                      skills: likedStartupSkills,
+                      todos: widget.storage.planTodos,
+                      onToggle: _toggleStartupSkillTodo,
+                    ),
+                    const SizedBox(height: 18),
+                  ],
                   _SectionCard(
-                    title: '4–8 週行動計畫',
-                    subtitle: '從今天就能開始',
+                    title: isStartup ? '6 週啟動清單' : '4–8 週行動計畫',
+                    subtitle: isStartup ? '從點子驗證走到 pitch' : '從今天就能開始',
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
@@ -892,6 +929,206 @@ class _CourseTaskTile extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 創業模式：把使用者在「探索」LIKE 過的能力卡，全部展開成可勾選的待辦。
+/// 同一張卡的待辦清單來自 [startupSkillTodos]；每個 item 用
+/// `skill:<skillId>:<idx>` 當 key 寫進 [AppStorage.planTodos]。
+class _StartupLikedSkillsSection extends StatelessWidget {
+  const _StartupLikedSkillsSection({
+    required this.skills,
+    required this.todos,
+    required this.onToggle,
+  });
+
+  final List<CareerRole> skills;
+  final Map<String, bool> todos;
+  final void Function(String skillId, int idx) onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    return _SectionCard(
+      title: '想練的創業能力',
+      subtitle: '從你 LIKE 過的卡開始',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (var i = 0; i < skills.length; i++) ...[
+            if (i > 0)
+              Container(
+                margin: const EdgeInsets.symmetric(vertical: 12),
+                height: 1,
+                color: AppColors.border,
+              ),
+            _StartupSkillTile(
+              skill: skills[i],
+              todos: todos,
+              onToggle: onToggle,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _StartupSkillTile extends StatelessWidget {
+  const _StartupSkillTile({
+    required this.skill,
+    required this.todos,
+    required this.onToggle,
+  });
+
+  final CareerRole skill;
+  final Map<String, bool> todos;
+  final void Function(String skillId, int idx) onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final items = startupSkillTodos[skill.id] ?? const <String>[];
+    final doneCount = [
+      for (var i = 0; i < items.length; i++)
+        if (todos['skill:${skill.id}:$i'] == true) 1,
+    ].length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Container(
+              width: 32,
+              height: 32,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                gradient: AppColors.brandGradient,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(
+                CupertinoIcons.bolt_fill,
+                color: CupertinoColors.white,
+                size: 16,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    skill.title,
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    skill.tagline,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      height: 1.4,
+                      color: AppColors.textTertiary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (items.isNotEmpty)
+              Text(
+                '$doneCount/${items.length}',
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textTertiary,
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (items.isEmpty)
+          const Padding(
+            padding: EdgeInsets.only(left: 42, top: 4),
+            child: Text(
+              '此能力暫無預設待辦，可到「計畫」頁手動寫週心得。',
+              style: TextStyle(fontSize: 12, color: AppColors.textTertiary),
+            ),
+          )
+        else
+          for (var i = 0; i < items.length; i++)
+            _SkillTodoRow(
+              text: items[i],
+              done: todos['skill:${skill.id}:$i'] ?? false,
+              onPressed: () => onToggle(skill.id, i),
+            ),
+      ],
+    );
+  }
+}
+
+class _SkillTodoRow extends StatelessWidget {
+  const _SkillTodoRow({
+    required this.text,
+    required this.done,
+    required this.onPressed,
+  });
+
+  final String text;
+  final bool done;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return CupertinoButton(
+      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
+      onPressed: onPressed,
+      child: Padding(
+        padding: const EdgeInsets.only(left: 30),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 20,
+              height: 20,
+              margin: const EdgeInsets.only(top: 2),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: done ? const Color(0xFFE8F8EE) : CupertinoColors.white,
+                border: Border.all(
+                  color: done ? const Color(0xFF86EFAC) : const Color(0x26000000),
+                ),
+                borderRadius: BorderRadius.circular(5),
+              ),
+              child: done
+                  ? const Icon(
+                      CupertinoIcons.check_mark,
+                      size: 12,
+                      color: Color(0xFF047857),
+                    )
+                  : const SizedBox.shrink(),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                text,
+                style: TextStyle(
+                  fontSize: 13,
+                  height: 1.35,
+                  decoration:
+                      done ? TextDecoration.lineThrough : TextDecoration.none,
+                  color: done
+                      ? const Color(0xFF71717A)
+                      : const Color(0xFF18181B),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

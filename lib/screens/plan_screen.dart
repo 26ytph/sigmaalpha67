@@ -82,7 +82,10 @@ class _PlanScreenState extends State<PlanScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final plan = generatePlan(widget.storage.explore.likedRoleIds);
+    final plan = generatePlan(
+      widget.storage.explore.likedRoleIds,
+      mode: widget.storage.profile.mode,
+    );
     final overall = _todoProgress(plan);
 
     return CupertinoPageScaffold(
