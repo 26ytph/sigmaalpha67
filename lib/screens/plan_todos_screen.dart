@@ -134,7 +134,14 @@ class _PlanTodosScreenState extends State<PlanTodosScreen> {
 
     return CupertinoPageScaffold(
       backgroundColor: const Color(0xFFFFF5F8),
-      navigationBar: const CupertinoNavigationBar(middle: Text('週任務清單')),
+      // transitionBetweenRoutes:false — this screen is mounted inside
+      // AppShell's IndexedStack alongside other CupertinoNavigationBars;
+      // sharing the default hero tag with them crashes the iOS back-swipe
+      // gesture when popping a route pushed over AppShell.
+      navigationBar: const CupertinoNavigationBar(
+        transitionBetweenRoutes: false,
+        middle: Text('週任務清單'),
+      ),
       child: SafeArea(
         child: plan.weeks.isEmpty
             ? const Center(
