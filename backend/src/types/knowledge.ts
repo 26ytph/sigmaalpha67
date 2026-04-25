@@ -16,7 +16,8 @@ export type KnowledgeSourceType =
   | "course"
   | "faq"
   | "service"
-  | "counselor_case";
+  | "counselor_case"
+  | "research";
 
 export type KnowledgeSource = {
   id: string;
