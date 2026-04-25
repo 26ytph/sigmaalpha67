@@ -93,6 +93,104 @@ class BackendApiException implements Exception {
   String toString() => 'BackendApiException: $message';
 }
 
+class TopQuestion {
+  const TopQuestion({
+    required this.question,
+    required this.count,
+    required this.urgency,
+  });
+
+  final String question;
+  final int count;
+  final String urgency;
+
+  factory TopQuestion.fromJson(Map<String, dynamic> j) => TopQuestion(
+        question: (j['question'] as String?) ?? '',
+        count: (j['count'] as num?)?.toInt() ?? 0,
+        urgency: (j['urgency'] as String?) ?? '',
+      );
+}
+
+class CareerPathStat {
+  const CareerPathStat({
+    required this.tag,
+    required this.label,
+    required this.interestedUsers,
+  });
+
+  final String tag;
+  final String label;
+  final int interestedUsers;
+
+  factory CareerPathStat.fromJson(Map<String, dynamic> j) => CareerPathStat(
+        tag: (j['tag'] as String?) ?? '',
+        label: (j['label'] as String?) ?? '',
+        interestedUsers: (j['interestedUsers'] as num?)?.toInt() ?? 0,
+      );
+}
+
+class SkillGap {
+  const SkillGap({required this.skill, required this.mentions});
+
+  final String skill;
+  final int mentions;
+
+  factory SkillGap.fromJson(Map<String, dynamic> j) => SkillGap(
+        skill: (j['skill'] as String?) ?? '',
+        mentions: (j['mentions'] as num?)?.toInt() ?? 0,
+      );
+}
+
+class StuckTask {
+  const StuckTask({
+    required this.taskKey,
+    required this.title,
+    required this.stuckUsers,
+  });
+
+  final String taskKey;
+  final String title;
+  final int stuckUsers;
+
+  factory StuckTask.fromJson(Map<String, dynamic> j) => StuckTask(
+        taskKey: (j['taskKey'] as String?) ?? '',
+        title: (j['title'] as String?) ?? '',
+        stuckUsers: (j['stuckUsers'] as num?)?.toInt() ?? 0,
+      );
+}
+
+class StartupNeed {
+  const StartupNeed({required this.stage, required this.users});
+
+  final String stage;
+  final int users;
+
+  factory StartupNeed.fromJson(Map<String, dynamic> j) => StartupNeed(
+        stage: (j['stage'] as String?) ?? '',
+        users: (j['users'] as num?)?.toInt() ?? 0,
+      );
+}
+
+class PolicySuggestion {
+  const PolicySuggestion({
+    required this.title,
+    required this.rationale,
+    required this.proposedActions,
+  });
+
+  final String title;
+  final String rationale;
+  final List<String> proposedActions;
+
+  factory PolicySuggestion.fromJson(Map<String, dynamic> j) => PolicySuggestion(
+        title: (j['title'] as String?) ?? '',
+        rationale: (j['rationale'] as String?) ?? '',
+        proposedActions: ((j['proposedActions'] as List?) ?? const [])
+            .whereType<String>()
+            .toList(),
+      );
+}
+
 class BackendApi {
   BackendApi._();
 
@@ -423,6 +521,67 @@ class BackendApi {
     required String note,
   }) async {
     await _request('PUT', '/api/plan/weeks/$week/note', body: {'note': note});
+  }
+
+  // ===== Policy Dashboard =====
+  static Future<List<TopQuestion>> fetchTopQuestions() async {
+    final data = await _request('GET', '/api/admin/dashboard/top-questions');
+    final items = (data['items'] as List?) ?? const [];
+    return items
+        .whereType<Map>()
+        .map((m) => TopQuestion.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  static Future<List<CareerPathStat>> fetchTopCareerPaths() async {
+    final data = await _request('GET', '/api/admin/dashboard/top-career-paths');
+    final items = (data['items'] as List?) ?? const [];
+    return items
+        .whereType<Map>()
+        .map((m) => CareerPathStat.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  static Future<List<SkillGap>> fetchSkillGaps() async {
+    final data = await _request('GET', '/api/admin/dashboard/skill-gaps');
+    final items = (data['items'] as List?) ?? const [];
+    return items
+        .whereType<Map>()
+        .map((m) => SkillGap.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  static Future<List<StuckTask>> fetchStuckTasks() async {
+    final data = await _request('GET', '/api/admin/dashboard/stuck-tasks');
+    final items = (data['items'] as List?) ?? const [];
+    return items
+        .whereType<Map>()
+        .map((m) => StuckTask.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  static Future<List<StartupNeed>> fetchStartupNeeds() async {
+    final data = await _request('GET', '/api/admin/dashboard/startup-needs');
+    final items = (data['items'] as List?) ?? const [];
+    return items
+        .whereType<Map>()
+        .map((m) => StartupNeed.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  static Future<List<PolicySuggestion>> fetchPolicySuggestions({
+    String focusArea = 'career',
+  }) async {
+    final data = await _request(
+      'POST',
+      '/api/admin/dashboard/policy-suggestions',
+      body: {'focusArea': focusArea},
+    );
+    final items = (data['suggestions'] as List?) ?? const [];
+    return items
+        .whereType<Map>()
+        .map((m) => PolicySuggestion.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
   }
 
   static Future<Map<String, dynamic>> _request(

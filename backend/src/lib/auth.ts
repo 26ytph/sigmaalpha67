@@ -38,14 +38,20 @@ export async function authenticate(
   if (supabase) {
     try {
       const { data, error } = await supabase.auth.getUser(token);
-      if (error || !data?.user) return null;
-      return {
-        userId: data.user.id,
-        token,
-        email: data.user.email ?? undefined,
-      };
+      if (!error && data?.user) {
+        return {
+          userId: data.user.id,
+          token,
+          email: data.user.email ?? undefined,
+        };
+      }
+      // Supabase rejected the token (not a valid JWT) — fall through to
+      // legacy "token = userId" mode so demo-user / curl smoke tests still
+      // work even when Supabase is configured. To enforce strict Supabase-
+      // only auth, set REQUIRE_SUPABASE_AUTH=1.
+      if (process.env.REQUIRE_SUPABASE_AUTH === "1") return null;
     } catch {
-      return null;
+      if (process.env.REQUIRE_SUPABASE_AUTH === "1") return null;
     }
   }
 

@@ -26,6 +26,7 @@ class HomeScreen extends StatefulWidget {
     required this.onOpenPlan,
     required this.onOpenPersona,
     required this.onOpenChat,
+    required this.onOpenSkillTranslator,
   });
 
   final AppStorage storage;
@@ -34,6 +35,7 @@ class HomeScreen extends StatefulWidget {
   final VoidCallback onOpenPlan;
   final VoidCallback onOpenPersona;
   final VoidCallback onOpenChat;
+  final VoidCallback onOpenSkillTranslator;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -399,6 +401,12 @@ class _HomeScreenState extends State<HomeScreen> {
         onTap: widget.onOpenPlan,
       ),
       _FeatureEntry(
+        icon: CupertinoIcons.text_badge_plus,
+        title: '技能翻譯',
+        subtitle: '把生活經驗變履歷',
+        onTap: widget.onOpenSkillTranslator,
+      ),
+      _FeatureEntry(
         icon: CupertinoIcons.chat_bubble_2_fill,
         title: 'YAYA - AI 助理',
         subtitle: '帶交接單的對話',
@@ -409,6 +417,26 @@ class _HomeScreenState extends State<HomeScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        const Padding(
+          padding: EdgeInsets.only(left: 4, bottom: 10),
+          child: Text(
+            '快速進入',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              color: AppColors.textSecondary,
+            ),
+          ),
+        ),
+        GridView.count(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          crossAxisCount: 2,
+          mainAxisSpacing: 10,
+          crossAxisSpacing: 10,
+          childAspectRatio: 2.6,
+          children: [for (final e in entries) _featureTile(e)],
+        ),
         AppGaps.h16,
         Padding(
           padding: const EdgeInsets.only(left: 4, bottom: 10),

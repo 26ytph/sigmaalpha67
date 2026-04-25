@@ -574,9 +574,12 @@ async function generateWithGemini(opts: {
   const primaryModel = process.env.GEMINI_MODEL || "gemini-2.5-flash";
   const fallbackModel =
     process.env.GEMINI_FALLBACK_MODEL || "gemini-2.5-flash-lite";
-  const modelsToTry = primaryModel === fallbackModel
-    ? [primaryModel]
-    : [primaryModel, fallbackModel];
+  // 第三層 fallback：gemini-2.0-flash 用獨立的 quota 池，2.5 系列爆配額時撐住 demo。
+  const fallbackModel2 =
+    process.env.GEMINI_FALLBACK_MODEL_2 || "gemini-2.0-flash";
+  const modelsToTry = Array.from(
+    new Set([primaryModel, fallbackModel, fallbackModel2]),
+  );
 
   const systemInstruction =
     "你是 EmploYA! 的青年職涯與創業助理「小幫手」，正在跟一位青年朋友聊天。" +

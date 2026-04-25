@@ -216,3 +216,80 @@ curl -s -X POST http://localhost:3001/api/chat/messages \
   the Flutter web build on a different origin.
 - **No rate limiting / no input validation library.** Add `zod` (or similar) at
   request boundaries before going to production.
+
+## Policy Dashboard (web page)
+
+Server-rendered web dashboard at **`/admin/dashboard`**. Open
+<http://localhost:3001/admin/dashboard> in any browser — it renders a styled
+HTML page suitable for showing to policy stakeholders, with all 6 spec sections
+(高頻問題 / 熱門職涯 / 技能缺口 / 卡關任務 / 創業需求 / 政策建議).
+
+Implementation: Server Component at `src/app/admin/dashboard/page.tsx`, data
+fetched via `loadDashboardSnapshot()` in `src/lib/dashboardData.ts`. The
+fetcher **tries Supabase first and falls back to the in-memory mock per-table**.
+Each card shows a `● Supabase` or `○ Mock` pill so you can see at a glance
+which sections are live.
+
+### Optional: wire to Supabase
+
+Run this SQL in Supabase Studio → SQL Editor:
+
+```sql
+create table if not exists dashboard_top_questions (
+  id          bigserial primary key,
+  question    text not null,
+  count       int  not null default 0,
+  urgency     text not null default '中',
+  inserted_at timestamptz default now()
+);
+create table if not exists dashboard_career_paths (
+  id               bigserial primary key,
+  tag              text not null,
+  label            text not null,
+  interested_users int  not null default 0
+);
+create table if not exists dashboard_skill_gaps (
+  id       bigserial primary key,
+  skill    text not null,
+  mentions int  not null default 0
+);
+create table if not exists dashboard_stuck_tasks (
+  id          bigserial primary key,
+  task_key    text not null,
+  title       text not null,
+  stuck_users int  not null default 0
+);
+create table if not exists dashboard_startup_needs (
+  id    bigserial primary key,
+  stage text not null,
+  users int  not null default 0
+);
+
+-- Seed (matches Module J spec in 開發文件.md)
+insert into dashboard_top_questions (question, count, urgency) values
+  ('文組轉職資料分析該怎麼開始？',     168, '中高'),
+  ('履歷沒方向、不知道從哪寫起',         142, '中'),
+  ('實習準備需要哪些技能？',             119, '中'),
+  ('我科系跟想做的工作不一樣，怎麼辦？', 98,  '中高'),
+  ('我想創業但不知道怎麼開始',           71,  '中');
+
+insert into dashboard_career_paths (tag, label, interested_users) values
+  ('ux','UX Research',312),('marketing','行銷企劃',287),
+  ('data','資料分析助理',240),('design','視覺 / 平面設計',188),
+  ('product','產品企劃',142);
+
+insert into dashboard_skill_gaps (skill, mentions) values
+  ('作品集敘事',211),('SQL 基本查詢',178),('履歷表達 (STAR)',165),
+  ('Excel 資料整理',132),('簡報與表達',121);
+
+insert into dashboard_stuck_tasks (task_key, title, stuck_users) values
+  ('w1.t0','整理作品集',96),('w2.t1','撰寫履歷',81),
+  ('w2.t2','錄製 1 分鐘自我介紹',58),('w3.t1','訪 3 位真實使用者',47);
+
+insert into dashboard_startup_needs (stage, users) values
+  ('資金（青創貸款）',124),('補助申請輔導',96),
+  ('共享空間 / 場地',58),('商業模式驗證',41);
+```
+
+The dashboard page is `force-dynamic`, so each browser refresh re-queries
+Supabase server-side; no client cache to bust.

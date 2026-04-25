@@ -24,12 +24,23 @@ export async function generateGeneralChatReply(opts: {
   }
   lastGeminiChatError.value = null;
 
-  const primaryModel = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-  const fallbackModel =
-    process.env.GEMINI_FALLBACK_MODEL || "gemini-2.5-flash-lite";
-  const modelsToTry = primaryModel === fallbackModel
-    ? [primaryModel]
-    : [primaryModel, fallbackModel];
+  // 4 層 model fallback：2.5-flash → 2.5-flash-lite → 2.0-flash → 1.5-flash
+  // 不同 model family 在 Google 後端常常算不同 quota 池。
+  const modelsToTry = Array.from(
+    new Set(
+      (process.env.GEMINI_MODEL_CHAIN ||
+        [
+          process.env.GEMINI_MODEL || "gemini-2.5-flash",
+          process.env.GEMINI_FALLBACK_MODEL || "gemini-2.5-flash-lite",
+          process.env.GEMINI_FALLBACK_MODEL_2 || "gemini-2.0-flash",
+          "gemini-1.5-flash",
+          "gemini-1.5-flash-8b",
+        ].join(","))
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  );
 
   const profileSummary = opts.profile
     ? `使用者資料：姓名=${opts.profile.name || "未填"}、科系=${opts.profile.department || "未填"}、年級=${opts.profile.grade || "未填"}、目前階段=${opts.profile.currentStage || "未填"}、興趣=${(opts.profile.interests ?? []).join("/") || "未填"}、目標=${(opts.profile.goals ?? []).join("/") || "未填"}、是否想創業=${opts.profile.startupInterest ? "是" : "否"}。`

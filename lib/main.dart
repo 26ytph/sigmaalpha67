@@ -207,6 +207,7 @@ class _AppShellState extends State<AppShell> {
                   onOpenPlan: () => _goTo(3),
                   onOpenPersona: _openPersona,
                   onOpenChat: () => _goTo(4),
+                  onOpenSkillTranslator: _openSkillTranslatorRoute,
                 ),
                 // 3 — 職涯路徑
                 planPane,

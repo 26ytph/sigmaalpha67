@@ -6,12 +6,20 @@ export default function Page() {
         This service exposes the EmploYA REST API. See <code>backend/README.md</code> for the
         endpoint catalogue.
       </p>
-      <p>
-        Health check: <a href="/api/health">/api/health</a>
-      </p>
-      <p>
-        Counselor console: <a href="/counselor/login">/counselor/login</a>
-      </p>
+      <ul>
+        <li>
+          <a href="/api/health">/api/health</a> — health check
+        </li>
+        <li>
+          <a href="/counselor/login">/counselor/login</a> — 諮詢師後台
+        </li>
+        <li>
+          <a href="/admin/dashboard">/admin/dashboard</a> — 政策端 Policy Dashboard (web)
+        </li>
+        <li>
+          <a href="/admin/report">/admin/report</a> — 政策正式報告（A4 / PDF）
+        </li>
+      </ul>
     </main>
   );
 }
