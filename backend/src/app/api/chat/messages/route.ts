@@ -229,9 +229,10 @@ export const POST = withAuth(async (req, { auth }) => {
   let reply = baseReply;
   if (needsHandoff) {
     const followUp = pickFollowUp(body.message);
+    const handoffNotice = pickHandoffNotice(body.message);
     reply =
       `${baseReply}\n\n` +
-      `📌 這題我目前沒辦法精確回答 — 已通知諮詢師，你可以等他們接手回覆。\n` +
+      `${handoffNotice}\n` +
       (followUp ? `如果方便，可以先補一些細節讓我先幫你整理：${followUp}` : "");
     autoCreateCounselorCaseInBackground({
       userId: auth.userId,
@@ -330,6 +331,9 @@ export const POST = withAuth(async (req, { auth }) => {
  */
 function pickFollowUp(question: string): string {
   const q = question.toLowerCase();
+  if (/快畢業|畢業|應屆|焦慮|壓力|迷惘|沒用|方向/.test(q)) {
+    return "你現在最卡住的是哪一段（科系/興趣/家裡期待/能力盤點/履歷/找工作）？最近有沒有一個讓你最猶豫的決定？";
+  }
   if (/補助|津貼|貸款|申請/.test(q)) {
     return "你的年齡 / 身分 / 設籍縣市，以及希望申請哪一類資源（職涯／創業／實習）？";
   }
@@ -346,6 +350,14 @@ function pickFollowUp(question: string): string {
     return "現在最讓你卡住的是哪一段（科系、興趣、家裡期待、能力盤點）？最近有什麼讓你猶豫的決定？";
   }
   return "可以多給一點背景嗎？例如目前階段、目標時程、已經試過什麼？";
+}
+
+function pickHandoffNotice(question: string): string {
+  const q = question.toLowerCase();
+  if (/快畢業|畢業|應屆|焦慮|壓力|迷惘|沒用|方向/.test(q)) {
+    return "📌 我會把這題整理給諮詢師接手；不是因為你問錯，而是畢業焦慮和方向釐清很適合有人陪你一起拆解。";
+  }
+  return "📌 這題我目前沒辦法精確回答 — 已通知諮詢師，你可以等他們接手回覆。";
 }
 
 /**

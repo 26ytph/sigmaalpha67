@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { withAuth } from "@/lib/route";
+import { withAuth, readJson } from "@/lib/route";
 import { apiError } from "@/lib/errors";
 import * as db from "@/lib/db";
 import {
@@ -8,16 +8,35 @@ import {
   upsertKnowledgeSource,
 } from "@/engines/rag";
 
+type ResolveBody = {
+  /**
+   * 是否把這個主題的 Q&A 推進 RAG 知識庫。
+   * - true（預設）：跑 AI 整理 + push KB + 寫 counselor_faqs，下次相同提問 AI 可直接答。
+   * - false：純粹標記 topic resolved，不動 KB。諮詢師覺得這個案例敏感／個人化太強
+   *          不適合當成範例時可以選這個。
+   */
+  saveToRag?: boolean;
+};
+
 /**
  * POST /api/counselor/topics/{topicId}/resolve
+ * Body: `{ saveToRag?: boolean }` — 預設 true（向後相容）。
  *
- * 諮詢師按下「問題解決」 — 把整個主題的 Q (使用者問題們) + 諮詢師回覆統整後丟進 KB，
- * 並把 topic 標 resolved，所有成員 normalized_questions 也跟著 resolved=true。
+ * 諮詢師按下「問題解決」：
+ *   - saveToRag=true：把整個主題的 Q (使用者問題們) + 諮詢師回覆統整後丟進 KB，
+ *                     並把 topic 標 resolved。
+ *   - saveToRag=false：只標 resolved，不動 KB（適合敏感／不適合當範例的個案）。
  *
+ * 不論哪一種，所有成員 normalized_questions 都會跟著 resolved=true。
  * 重要：AI 暫時回覆**不會**被收進 KB 整理 —— 只用 user 的原始問題 + 諮詢師回覆。
  */
 export const POST = withAuth<{ topicId: string }>(
-  async (_req, { auth, params }) => {
+  async (req, { auth, params }) => {
+    const body: ResolveBody =
+      (await readJson<ResolveBody>(req).catch(() => null)) ?? {};
+    // 缺欄位 → 預設存進 RAG（保留舊呼叫方的行為）
+    const saveToRag = body.saveToRag !== false;
+
     const topic = await db.fetchTopicWithMembers(params.topicId);
     if (!topic) return apiError("not_found", "Topic not found.");
     if (topic.status === "resolved") {
@@ -43,6 +62,22 @@ export const POST = withAuth<{ topicId: string }>(
         counselorReplies.length === 1 ? r.text : `(${i + 1}) ${r.text}`,
       )
       .join("\n\n");
+
+    // ---- 不存 RAG 路徑 ----
+    if (!saveToRag) {
+      const updated = await db.markTopicResolved(topic.id, {
+        resolvedBy: auth.userId,
+        kbSourceId: null,
+      });
+      return NextResponse.json({
+        topic: updated,
+        kbSourceId: null,
+        summarized: null,
+        savedToRag: false,
+      });
+    }
+
+    // ---- 存 RAG 路徑 ----
 
     // 3) AI 整理（標題 / 摘要 / 整合過的問題敘述）— 不採用 AI 暫時回覆
     const summarized = await summarizeTopicQA({
@@ -91,6 +126,7 @@ export const POST = withAuth<{ topicId: string }>(
       topic: updated,
       kbSourceId: faqId,
       summarized: summarized ?? null,
+      savedToRag: true,
     });
   },
 );

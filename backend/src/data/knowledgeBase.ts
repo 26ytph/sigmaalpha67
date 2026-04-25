@@ -709,6 +709,32 @@ export const KNOWLEDGE_BASE_SEED: KnowledgeSourceInput[] = [
     approvedByCounselor: true,
   },
   {
+    id: "faq_graduation_anxiety_direction",
+    title: "FAQ：快畢業覺得焦慮、覺得自己沒用怎麼辦？",
+    category: "faq",
+    sourceType: "faq",
+    content:
+      "快畢業時感到焦慮、擔心自己沒有用或不知道下一步，是常見的畢業轉銜壓力，不代表使用者真的沒有能力。AI 不應做心理診斷，也不應只給空泛安慰；應先承接情緒，再把問題拆成可處理的三件事：目前卡住的是方向、能力盤點、履歷表達、求職資訊，還是家人期待；接著請使用者列出 2 到 3 個課堂、社團、打工或專案經驗，做技能翻譯；最後建議使用職涯諮詢或履歷健檢，讓諮詢師一起整理下一步。若使用者表達強烈痛苦、想傷害自己或無法維持日常，應立即建議尋求真人與緊急支持。",
+    applicationMethod: "先用支持性回應與問題拆解陪使用者整理，再視情況轉交諮詢師。",
+    targetUser: ["應屆畢業生", "大四學生", "職涯焦慮者", "方向不明者"],
+    relatedSkills: ["能力盤點", "技能翻譯", "職涯探索", "履歷準備"],
+    tags: ["快畢業", "畢業焦慮", "覺得沒用", "方向不明", "心理支持", "職涯諮詢", "諮詢師接手"],
+    approvedByCounselor: true,
+  },
+  {
+    id: "faq_graduation_next_step_triage",
+    title: "FAQ：畢業前不知道適合什麼，下一步怎麼整理？",
+    category: "faq",
+    sourceType: "faq",
+    content:
+      "當使用者說快畢業但不知道自己適合什麼，AI 可以先做低門檻 triage：一、確認目前階段與期限，例如大四、研究生、剛畢業或待業；二、確認偏好與排斥，例如喜歡人群互動、資料整理、企劃、工程、研究或服務；三、整理已做過的經驗，轉成職場能力；四、先選 1 到 2 個低風險方向做七天任務，例如看職務介紹、整理一份作品、改一版履歷、預約職涯諮詢。回答應避免替使用者直接下定論，而是產生可行的下一步。",
+    applicationMethod: "用於 AI Chat、問題正規化、Persona 更新與 To-do List 產生。",
+    targetUser: ["應屆畢業生", "職涯探索者", "第一份工作求職者"],
+    relatedSkills: ["職涯探索", "履歷", "作品集", "求職規劃"],
+    tags: ["畢業", "應屆生", "不知道適合什麼", "下一步", "職涯探索", "To-do List"],
+    approvedByCounselor: true,
+  },
+  {
     id: "faq_no_experience_resume",
     title: "FAQ：沒有正式工作經驗可以怎麼寫履歷？",
     category: "faq",
