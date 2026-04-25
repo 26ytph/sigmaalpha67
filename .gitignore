@@ -1,45 +1,201 @@
-# Miscellaneous
-*.class
-*.log
-*.pyc
-*.swp
-.DS_Store
-.atom/
-.build/
-.buildlog/
-.history
-.svn/
-.swiftpm/
-migrate_working_dir/
+# =====================================================================
+# EmploYA! — Project root .gitignore
+# 涵蓋 Flutter 前端 + Next.js (backend/) + Supabase + 編輯器／OS 雜物
+# =====================================================================
 
-# IntelliJ related
+# ---------------------------------------------------------------------
+# 🔑 SECRETS — 千萬不要 commit 上去（service_role key、JWT secret 等）
+# ---------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# 各種 key / token 檔
+*.pem
+*.key
+*.p12
+*.keystore
+*.jks
+*.mobileprovision
+google-services.json
+GoogleService-Info.plist
+serviceAccountKey.json
+
+# ---------------------------------------------------------------------
+# 🪶 Flutter / Dart
+# ---------------------------------------------------------------------
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+.metadata
+build/
+/build/
+**/build/
+**/coverage/
+.fvm/
+**/doc/api/
+**/ios/Flutter/.last_build_id
+
+# Symbolication / obfuscation artefacts
+app.*.symbols
+app.*.map.json
+
+# Generated code
+*.g.dart
+*.freezed.dart
+*.mocks.dart
+pubspec.lock_backup
+
+# ---------------------------------------------------------------------
+# 📱 iOS
+# ---------------------------------------------------------------------
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/ios/Flutter/App.framework
+**/ios/Flutter/flutter_assets/
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/ephemeral/
+**/ios/Runner/GeneratedPluginRegistrant.*
+**/ios/ServiceDefinitions.json
+**/ios/Runner/PrivacyInfo.xcprivacy
+**/ios/Runner.xcworkspace/xcuserdata/
+**/ios/Runner.xcodeproj/xcuserdata/
+**/ios/Runner.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcuserstate
+
+# ---------------------------------------------------------------------
+# 🤖 Android
+# ---------------------------------------------------------------------
+**/android/.gradle/
+**/android/captures/
+**/android/gradlew
+**/android/gradlew.bat
+**/android/local.properties
+**/android/**/GeneratedPluginRegistrant.java
+**/android/key.properties
+**/android/app/release/
+**/android/app/profile/
+**/android/app/debug/
+*.apk
+*.aab
+
+# ---------------------------------------------------------------------
+# 🖥️ Linux / macOS / Windows desktop targets
+# ---------------------------------------------------------------------
+**/linux/flutter/ephemeral/
+**/macos/Flutter/ephemeral/
+**/windows/flutter/ephemeral/
+
+# ---------------------------------------------------------------------
+# 🌐 Web build
+# ---------------------------------------------------------------------
+**/web/build/
+
+# ---------------------------------------------------------------------
+# 🟢 Next.js / Node (backend/)
+# ---------------------------------------------------------------------
+**/node_modules/
+**/.next/
+**/out/
+**/dist/
+**/.turbo/
+**/.vercel/
+*.tsbuildinfo
+next-env.d.ts
+
+# Package manager lockfiles — keep ONE per project; here we keep
+# pnpm-lock.yaml and ignore the others if you accidentally generate them.
+# 移除底下兩行如果你改用 npm / yarn
+backend/package-lock.json
+backend/yarn.lock
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+logs/
+
+# ---------------------------------------------------------------------
+# 🗄️ Supabase
+# ---------------------------------------------------------------------
+# CLI working dirs / 本機 db
+**/supabase/.branches/
+**/supabase/.temp/
+**/supabase/logs/
+**/supabase/data/
+**/supabase/.env
+# 仍保留 schema.sql / seed.sql / migrations/ 進版本
+
+# ---------------------------------------------------------------------
+# 🧠 IDE / Editor
+# ---------------------------------------------------------------------
+# IntelliJ / Android Studio
 *.iml
 *.ipr
 *.iws
 .idea/
 
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
-#.vscode/
+# VS Code (依需求保留 launch.json / settings.json 可以 commit；只擋本機快取)
+.vscode/*.cache
+.history/
+.cursor/
+.claude/local/
 
-# Flutter/Dart/Pub related
-**/doc/api/
-**/ios/Flutter/.last_build_id
-.dart_tool/
-.flutter-plugins-dependencies
-.pub-cache/
-.pub/
-/build/
-/coverage/
+# Vim / Emacs / Sublime
+*.swp
+*.swo
+*.bak
+*~
+.\#*
+\#*\#
+*.sublime-workspace
 
-# Symbolication related
-app.*.symbols
+# ---------------------------------------------------------------------
+# 🍎🪟🐧 OS junk
+# ---------------------------------------------------------------------
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
 
-# Obfuscation related
-app.*.map.json
+# ---------------------------------------------------------------------
+# 🐍 / 🦀 / misc
+# ---------------------------------------------------------------------
+*.class
+*.pyc
+__pycache__/
+.atom/
+.svn/
+.swiftpm/
+migrate_working_dir/
 
-# Android Studio will place build artifacts here
-/android/app/debug
-/android/app/profile
-/android/app/release
+# ---------------------------------------------------------------------
+# 📝 雜物 / 暫存
+# ---------------------------------------------------------------------
+# Build / coverage 報告
+coverage/
+junit.xml
+*.lcov
+
+# 履歷產生器測試輸出
+*_resume.pdf
+*.tex.bak
+
+# 本機客製設定，不入版本
+.local/
+**/local.properties
+*.local.dart

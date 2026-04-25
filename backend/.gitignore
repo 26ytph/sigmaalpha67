@@ -1,0 +1,11 @@
+node_modules/
+.next/
+out/
+dist/
+
+# Env files — keep .env.example tracked, ignore everything else.
+.env
+.env.*
+!.env.example
+
+*.tsbuildinfo

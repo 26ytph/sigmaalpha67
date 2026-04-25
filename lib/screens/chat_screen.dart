@@ -1,0 +1,988 @@
+import 'dart:async';
+import 'dart:math';
+
+import 'package:flutter/cupertino.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+import '../logic/counselor_brief.dart';
+import '../logic/intent_normalizer.dart';
+import '../models/models.dart';
+import '../services/app_repository.dart';
+import '../services/backend_api.dart';
+import '../utils/theme.dart';
+
+class ChatMessage {
+  ChatMessage({
+    required this.text,
+    required this.fromUser,
+    required this.time,
+    this.normalized,
+    this.askedHandoff = false,
+    this.sources = const [],
+  });
+
+  final String text;
+  final bool fromUser;
+  final DateTime time;
+  final NormalizedQuestion? normalized;
+  final bool askedHandoff;
+  final List<RagSource> sources;
+}
+
+class ChatScreen extends StatefulWidget {
+  const ChatScreen({super.key, required this.storage});
+
+  final AppStorage storage;
+
+  @override
+  State<ChatScreen> createState() => _ChatScreenState();
+}
+
+class _ChatScreenState extends State<ChatScreen> {
+  late List<ChatMessage> _messages;
+
+  final TextEditingController _controller = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  final Random _random = Random();
+  String? _conversationId;
+  bool _typing = false;
+  DateTime? _cooldownUntil;
+  static const Duration _sendCooldown = Duration(milliseconds: 1500);
+  static const String _convIdPrefsKey = 'employa.chat.conversationId';
+
+  bool get _onCooldown =>
+      _cooldownUntil != null && DateTime.now().isBefore(_cooldownUntil!);
+
+  @override
+  void initState() {
+    super.initState();
+    _messages = [_greeting()];
+    _restoreConversationId();
+  }
+
+  Future<void> _restoreConversationId() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString(_convIdPrefsKey);
+      if (saved != null && saved.isNotEmpty && mounted) {
+        setState(() => _conversationId = saved);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _persistConversationId(String? id) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (id == null || id.isEmpty) {
+        await prefs.remove(_convIdPrefsKey);
+      } else {
+        await prefs.setString(_convIdPrefsKey, id);
+      }
+    } catch (_) {}
+  }
+
+  ChatMessage _greeting() {
+    final name = widget.storage.profile.name;
+    final greet = name.isNotEmpty
+        ? '嗨 $name！我是 EmploYA 小幫手。想聊職涯方向、面試、創業或心情都可以。'
+        : '嗨，我是 EmploYA 小幫手。想聊聊職涯方向、面試準備、或計畫怎麼推進都可以！';
+    return ChatMessage(text: greet, fromUser: false, time: DateTime.now());
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) return;
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 240),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
+  String _mockReply(String prompt, NormalizedQuestion n) {
+    final p = prompt.toLowerCase();
+    if (p.contains('面試') || p.contains('interview')) {
+      return '面試前先把履歷上的每個專案濃縮成 30 秒版本，並準備 1 個量化成果（例如「將處理時間縮短 40%」）。要我幫你列幾個常見問題嗎？';
+    }
+    if (p.contains('履歷') || p.contains('resume') || p.contains('cv')) {
+      return '一頁式履歷的關鍵：用動詞開頭、加數字、把最近最相關的經驗放最上面。需要我幫你看哪一段？也可以到「技能翻譯」把生活經驗轉成可放履歷的句子。';
+    }
+    if (p.contains('計畫') || p.contains('plan') || p.contains('todo')) {
+      return '可以從「計畫」分頁的 4–8 週清單開始，挑一週先完成 1 個小任務累積動能，比一次塞滿更容易持續。';
+    }
+    if (p.contains('興趣') ||
+        p.contains('探索') ||
+        p.contains('方向') ||
+        p.contains('迷惘')) {
+      return '不確定方向時，建議到「探索」分頁滑 20 張卡，把按 ❤ 的職位列出來，再看共同的關鍵字 — 那通常就是你的興趣輪廓。Persona 也會跟著更新。';
+    }
+    if (p.contains('創業') || p.contains('開店') || p.contains('做生意')) {
+      return '如果是早期想法，可以先用一頁紙寫清楚：受眾／價值／驗證方式。資金面可以查青年創業貸款與政府補助。要我幫你拆成 To-do 嗎？';
+    }
+    if (p.contains('壓力') || p.contains('焦慮') || p.contains('累')) {
+      return '聽起來最近真的有點累，先深呼吸一下。把今天能做的事縮到最小一步：寫下 1 件想釐清的事 + 1 個可以問的人，先動起來再說。';
+    }
+    if (p.contains('你好') ||
+        p.contains('hi') ||
+        p.contains('hello') ||
+        p.contains('哈囉')) {
+      return '哈囉！想從哪裡開始？我可以陪你想方向、整理履歷、拆解計畫，或聊聊心情。';
+    }
+    if (n.intents.contains('資源／政策')) {
+      return '資源面我可以先幫你列：青年職涯諮詢、創業貸款、補助公告。要不要把你的條件告訴我，我幫你篩出最相關的幾個？';
+    }
+    const fallbacks = [
+      '可以再多說一點嗎？例如你目前卡在哪個階段？',
+      '我先記下這個方向。你希望今天就動手做一件小事，還是先想清楚再行動？',
+      '聽起來值得拆成幾個小步驟。要不要一起列出第一步？',
+      '不錯的問題。先問自己：3 個月後若這件事完成，會長什麼樣子？',
+    ];
+    return fallbacks[_random.nextInt(fallbacks.length)];
+  }
+
+  Future<void> _send() async {
+    final text = _controller.text.trim();
+    if (text.isEmpty || _typing || _onCooldown) return;
+
+    final normalized = IntentNormalizer.normalize(
+      question: text,
+      profile: widget.storage.profile,
+    );
+
+    setState(() {
+      _messages.add(
+        ChatMessage(
+          text: text,
+          fromUser: true,
+          time: DateTime.now(),
+          normalized: normalized,
+        ),
+      );
+      _typing = true;
+      _controller.clear();
+    });
+    _scrollToBottom();
+
+    String reply;
+    bool shouldHandoff;
+    List<RagSource> sources = const [];
+    Duration cooldown = _sendCooldown;
+    try {
+      final remote = await AppRepository.sendChatMessage(
+        conversationId: _conversationId,
+        message: text,
+        mode: widget.storage.profile.mode,
+      );
+      final nextConvId = remote.conversationId ?? _conversationId;
+      if (nextConvId != null && nextConvId != _conversationId) {
+        unawaited(_persistConversationId(nextConvId));
+      }
+      _conversationId = nextConvId;
+      reply = remote.reply;
+      sources = remote.sources;
+      shouldHandoff = remote.shouldHandoff;
+    } on BackendApiException catch (e) {
+      if (e.isRateLimited) {
+        final waitMs = e.retryAfterMs ?? 5000;
+        cooldown = Duration(milliseconds: waitMs);
+        final secs = (waitMs / 1000).ceil();
+        reply = '一下子問太多囉～請等 $secs 秒再試一次喔。'
+            '（為了避免 LLM 配額被打爆，每分鐘限制 30 則訊息）';
+        shouldHandoff = false;
+      } else {
+        await Future.delayed(
+          Duration(milliseconds: 600 + _random.nextInt(500)),
+        );
+        reply = _mockReply(text, normalized);
+        shouldHandoff =
+            normalized.urgency == '高' ||
+            normalized.urgency == '中高' ||
+            normalized.intents.length >= 2;
+      }
+    } catch (_) {
+      await Future.delayed(Duration(milliseconds: 600 + _random.nextInt(500)));
+      reply = _mockReply(text, normalized);
+      shouldHandoff =
+          normalized.urgency == '高' ||
+          normalized.urgency == '中高' ||
+          normalized.intents.length >= 2;
+    }
+    if (!mounted) return;
+
+    setState(() {
+      _messages.add(
+        ChatMessage(
+          text: reply,
+          fromUser: false,
+          time: DateTime.now(),
+          askedHandoff: shouldHandoff,
+          sources: sources,
+        ),
+      );
+      _typing = false;
+      _cooldownUntil = DateTime.now().add(cooldown);
+    });
+    _scrollToBottom();
+
+    Future.delayed(cooldown, () {
+      if (mounted) setState(() {});
+    });
+  }
+
+  void _showCounselorBrief(ChatMessage userMsg) {
+    final n = userMsg.normalized;
+    if (n == null) return;
+    final brief = CounselorBriefEngine.build(
+      profile: widget.storage.profile,
+      persona: widget.storage.persona,
+      explore: widget.storage.explore,
+      normalized: n,
+      originalQuestion: userMsg.text,
+    );
+
+    showCupertinoModalPopup<void>(
+      context: context,
+      builder: (ctx) => _CounselorBriefSheet(brief: brief),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return CupertinoPageScaffold(
+      backgroundColor: AppColors.bg,
+      navigationBar: CupertinoNavigationBar(
+        backgroundColor: AppColors.surface.withValues(alpha: 0.92),
+        border: const Border(bottom: BorderSide(color: AppColors.border)),
+        middle: const Text(
+          'YAYA - AI 職涯小助理',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w800,
+            color: AppColors.textPrimary,
+          ),
+        ),
+      ),
+      child: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            Expanded(
+              child: ListView.builder(
+                controller: _scrollController,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 14,
+                ),
+                itemCount: _messages.length + (_typing ? 1 : 0),
+                itemBuilder: (context, index) {
+                  if (_typing && index == _messages.length) {
+                    return const _TypingBubble();
+                  }
+                  final m = _messages[index];
+                  if (!m.fromUser && m.askedHandoff) {
+                    final prevUser = _findPrevUser(index);
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _MessageBubble(message: m),
+                        if (prevUser != null)
+                          _HandoffPrompt(
+                            onTap: () => _showCounselorBrief(prevUser),
+                          ),
+                      ],
+                    );
+                  }
+                  if (m.fromUser && m.normalized != null) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        _MessageBubble(message: m),
+                        _NormalizedChip(
+                          normalized: m.normalized!,
+                          onTap: () => _showCounselorBrief(m),
+                        ),
+                      ],
+                    );
+                  }
+                  return _MessageBubble(message: m);
+                },
+              ),
+            ),
+            _Composer(
+              controller: _controller,
+              onSend: _send,
+              enabled: !_typing && !_onCooldown,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  ChatMessage? _findPrevUser(int idx) {
+    for (var i = idx - 1; i >= 0; i--) {
+      if (_messages[i].fromUser) return _messages[i];
+    }
+    return null;
+  }
+}
+
+class _MessageBubble extends StatelessWidget {
+  const _MessageBubble({required this.message});
+
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final fromUser = message.fromUser;
+    final align = fromUser ? Alignment.centerRight : Alignment.centerLeft;
+    final radius = BorderRadius.only(
+      topLeft: const Radius.circular(20),
+      topRight: const Radius.circular(20),
+      bottomLeft: Radius.circular(fromUser ? 20 : 4),
+      bottomRight: Radius.circular(fromUser ? 4 : 20),
+    );
+
+    final decoration = fromUser
+        ? BoxDecoration(gradient: AppColors.brandGradient, borderRadius: radius)
+        : BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: radius,
+            border: Border.all(color: AppColors.border),
+            boxShadow: AppColors.shadowSoft,
+          );
+
+    final hasSources = !fromUser && message.sources.isNotEmpty;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Align(
+        alignment: align,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.of(context).size.width * 0.82,
+          ),
+          child: Column(
+            crossAxisAlignment: fromUser
+                ? CrossAxisAlignment.end
+                : CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
+                ),
+                decoration: decoration,
+                child: Text(
+                  message.text,
+                  style: TextStyle(
+                    fontSize: 15,
+                    height: 1.5,
+                    color: fromUser
+                        ? CupertinoColors.white
+                        : AppColors.textPrimary,
+                  ),
+                ),
+              ),
+              if (hasSources) ...[
+                const SizedBox(height: 6),
+                _SourceChips(sources: message.sources),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SourceChips extends StatelessWidget {
+  const _SourceChips({required this.sources});
+
+  final List<RagSource> sources;
+
+  @override
+  Widget build(BuildContext context) {
+    final visible = sources.take(3).toList();
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: [
+        for (final s in visible) _SourceChip(source: s),
+      ],
+    );
+  }
+}
+
+class _SourceChip extends StatelessWidget {
+  const _SourceChip({required this.source});
+
+  final RagSource source;
+
+  Future<void> _open() async {
+    final url = source.url;
+    if (url == null || url.isEmpty) return;
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hasUrl = source.url != null && source.url!.isNotEmpty;
+    return CupertinoButton(
+      padding: EdgeInsets.zero,
+      minimumSize: Size.zero,
+      onPressed: hasUrl ? _open : null,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceMuted,
+          borderRadius: BorderRadius.circular(AppRadii.pill),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              hasUrl
+                  ? CupertinoIcons.link
+                  : CupertinoIcons.doc_text,
+              size: 11,
+              color: hasUrl ? AppColors.brandStart : AppColors.textTertiary,
+            ),
+            const SizedBox(width: 4),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 220),
+              child: Text(
+                source.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
+                  color: hasUrl
+                      ? AppColors.brandStart
+                      : AppColors.textSecondary,
+                ),
+              ),
+            ),
+            if (hasUrl) ...[
+              const SizedBox(width: 2),
+              const Icon(
+                CupertinoIcons.arrow_up_right,
+                size: 10,
+                color: AppColors.brandStart,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _NormalizedChip extends StatelessWidget {
+  const _NormalizedChip({required this.normalized, required this.onTap});
+
+  final NormalizedQuestion normalized;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: CupertinoButton(
+          padding: EdgeInsets.zero,
+          minimumSize: Size.zero,
+          onPressed: onTap,
+          child: Container(
+            constraints: BoxConstraints(
+              maxWidth: MediaQuery.of(context).size.width * 0.78,
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceMuted,
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(14),
+                topRight: Radius.circular(14),
+                bottomLeft: Radius.circular(14),
+                bottomRight: Radius.circular(4),
+              ),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      CupertinoIcons.wand_stars,
+                      size: 12,
+                      color: AppColors.brandStart,
+                    ),
+                    AppGaps.w6,
+                    Text(
+                      'AI 結構化問題',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.4,
+                        color: AppColors.brandStart,
+                      ),
+                    ),
+                    AppGaps.w8,
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 1,
+                      ),
+                      decoration: BoxDecoration(
+                        color: _urgencyColor(
+                          normalized.urgency,
+                        ).withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        '迫切：${normalized.urgency}',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: _urgencyColor(normalized.urgency),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                AppGaps.h6,
+                Text(
+                  '意圖：${normalized.intents.join('、')}',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                if (normalized.missingInfo.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      '尚缺：${normalized.missingInfo.take(2).join('、')}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textTertiary,
+                      ),
+                    ),
+                  ),
+                AppGaps.h6,
+                const Text(
+                  '點此查看諮詢師交接單 →',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.brandStart,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  static Color _urgencyColor(String u) {
+    switch (u) {
+      case '高':
+        return AppColors.accentRose;
+      case '中高':
+        return AppColors.warn;
+      case '中':
+        return AppColors.brandStart;
+      default:
+        return AppColors.textTertiary;
+    }
+  }
+}
+
+class _HandoffPrompt extends StatelessWidget {
+  const _HandoffPrompt({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: CupertinoButton(
+          padding: EdgeInsets.zero,
+          minimumSize: Size.zero,
+          onPressed: onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            decoration: BoxDecoration(
+              gradient: AppColors.softGradient,
+              borderRadius: BorderRadius.circular(AppRadii.pill),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  CupertinoIcons.person_2_fill,
+                  size: 14,
+                  color: AppColors.brandStart,
+                ),
+                AppGaps.w6,
+                Text(
+                  '需要真人諮詢師？產生交接單',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.brandStart,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CounselorBriefSheet extends StatelessWidget {
+  const _CounselorBriefSheet({required this.brief});
+
+  final CounselorBrief brief;
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.92,
+      minChildSize: 0.5,
+      maxChildSize: 0.96,
+      builder: (context, scroll) {
+        return Container(
+          decoration: const BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+          ),
+          child: Column(
+            children: [
+              const SizedBox(height: 10),
+              Container(
+                width: 44,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFD4D4D8),
+                  borderRadius: BorderRadius.circular(AppRadii.pill),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        gradient: AppColors.brandGradient,
+                        borderRadius: BorderRadius.circular(AppRadii.pill),
+                      ),
+                      child: const Text(
+                        '諮詢師交接單',
+                        style: TextStyle(
+                          color: CupertinoColors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    const Spacer(),
+                    Text(
+                      '迫切度：${brief.urgency}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textTertiary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: ListView(
+                  controller: scroll,
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+                  children: [
+                    const Text(
+                      '快速接手對話',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -0.3,
+                      ),
+                    ),
+                    AppGaps.h12,
+                    _briefSection('使用者背景', brief.userBackground),
+                    _briefSection('Persona 摘要', brief.personaSummary),
+                    _briefSection('近期互動', brief.recentActivities),
+                    _briefSection('原始問題', brief.mainQuestion),
+                    _briefSection('AI 分析', brief.aiAnalysis),
+                    _briefList('建議談話方向', brief.suggestedTopics),
+                    _briefList('推薦資源', brief.recommendedResources),
+                    AppGaps.h8,
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: AppColors.bgAlt,
+                        borderRadius: BorderRadius.circular(AppRadii.md),
+                        border: Border.all(color: AppColors.border),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'AI 回稿（諮詢師可修改後送出）',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0.4,
+                              color: AppColors.brandStart,
+                            ),
+                          ),
+                          AppGaps.h8,
+                          Text(
+                            brief.aiDraftReply,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              height: 1.6,
+                              color: AppColors.textPrimary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _briefSection(String title, String body) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.4,
+              color: AppColors.textTertiary,
+            ),
+          ),
+          AppGaps.h6,
+          Text(
+            body,
+            style: const TextStyle(
+              fontSize: 14,
+              height: 1.55,
+              color: AppColors.textPrimary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _briefList(String title, List<String> items) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.4,
+              color: AppColors.textTertiary,
+            ),
+          ),
+          AppGaps.h6,
+          for (final s in items)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text(
+                '・$s',
+                style: const TextStyle(
+                  fontSize: 14,
+                  height: 1.5,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TypingBubble extends StatefulWidget {
+  const _TypingBubble();
+
+  @override
+  State<_TypingBubble> createState() => _TypingBubbleState();
+}
+
+class _TypingBubbleState extends State<_TypingBubble>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ac;
+
+  @override
+  void initState() {
+    super.initState();
+    _ac = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1100),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _ac.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: const BorderRadius.only(
+              topLeft: Radius.circular(20),
+              topRight: Radius.circular(20),
+              bottomLeft: Radius.circular(4),
+              bottomRight: Radius.circular(20),
+            ),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: AnimatedBuilder(
+            animation: _ac,
+            builder: (context, _) {
+              return Row(
+                mainAxisSize: MainAxisSize.min,
+                children: List.generate(3, (i) {
+                  final t = (_ac.value + i / 3) % 1.0;
+                  final scale = 0.6 + 0.4 * (1 - (t * 2 - 1).abs());
+                  return Padding(
+                    padding: EdgeInsets.only(right: i == 2 ? 0 : 6),
+                    child: Opacity(
+                      opacity: 0.4 + 0.6 * scale,
+                      child: Container(
+                        width: 7,
+                        height: 7,
+                        decoration: const BoxDecoration(
+                          color: AppColors.textMuted,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Composer extends StatelessWidget {
+  const _Composer({
+    required this.controller,
+    required this.onSend,
+    required this.enabled,
+  });
+
+  final TextEditingController controller;
+  final VoidCallback onSend;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        border: Border(top: BorderSide(color: AppColors.border)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Expanded(
+            child: CupertinoTextField(
+              controller: controller,
+              minLines: 1,
+              maxLines: 5,
+              enabled: enabled,
+              placeholder: '和 YAYA 說說你的職涯小煩惱…',
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceMuted,
+                borderRadius: BorderRadius.circular(22),
+                border: Border.all(color: AppColors.border),
+              ),
+              onSubmitted: (_) => onSend(),
+            ),
+          ),
+          AppGaps.w8,
+          CupertinoButton(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            color: AppColors.textPrimary,
+            disabledColor: const Color(0xFFA1A1AA),
+            borderRadius: BorderRadius.circular(22),
+            onPressed: enabled ? onSend : null,
+            child: const Icon(
+              CupertinoIcons.arrow_up,
+              color: CupertinoColors.white,
+              size: 20,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
