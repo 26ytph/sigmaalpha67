@@ -286,6 +286,8 @@ class BackendApi {
 
   static Map<String, dynamic> _profileToJson(UserProfile p) => {
     'name': p.name,
+    'school': p.school,
+    'birthday': p.birthday,
     'age': p.age,
     'contact': p.contact,
     'department': p.department,
@@ -306,7 +308,8 @@ class BackendApi {
   }) {
     return fallback.copyWith(
       name: (j['name'] as String?) ?? fallback.name,
-      age: (j['age'] as String?) ?? fallback.age,
+      school: (j['school'] as String?) ?? fallback.school,
+      birthday: (j['birthday'] as String?) ?? fallback.birthday,
       contact: (j['contact'] as String?) ?? fallback.contact,
       department: (j['department'] as String?) ?? fallback.department,
       grade: (j['grade'] as String?) ?? fallback.grade,
