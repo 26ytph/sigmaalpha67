@@ -104,13 +104,50 @@ class _SkillTranslatorScreenState extends State<SkillTranslatorScreen> {
   @override
   Widget build(BuildContext context) {
     final history = widget.storage.skillTranslations;
+    final canSave = _draft != null && !_saving;
 
     return CupertinoPageScaffold(
       backgroundColor: AppColors.bg,
-      navigationBar: const CupertinoNavigationBar(
+      navigationBar: CupertinoNavigationBar(
         backgroundColor: AppColors.surface,
-        border: Border(bottom: BorderSide(color: AppColors.border)),
-        middle: Text('技能翻譯'),
+        border: const Border(bottom: BorderSide(color: AppColors.border)),
+        leading: CupertinoButton(
+          padding: EdgeInsets.zero,
+          minimumSize: Size.zero,
+          onPressed: () => Navigator.of(context).maybePop(),
+          child: const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(CupertinoIcons.back,
+                  size: 18, color: AppColors.brandStart),
+              AppGaps.w4,
+              Text(
+                '回我的履歷',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.brandStart,
+                ),
+              ),
+            ],
+          ),
+        ),
+        middle: const Text('技能翻譯'),
+        trailing: CupertinoButton(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          minimumSize: Size.zero,
+          onPressed: canSave ? _save : null,
+          child: Text(
+            '加入 Persona',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w800,
+              color: canSave
+                  ? AppColors.brandStart
+                  : AppColors.textTertiary,
+            ),
+          ),
+        ),
       ),
       child: SafeArea(
         child: ListView(

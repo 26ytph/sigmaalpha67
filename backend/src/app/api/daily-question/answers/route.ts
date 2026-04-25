@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { withAuth, readJson } from "@/lib/route";
 import { apiError } from "@/lib/errors";
 import { store } from "@/lib/store";
+import * as db from "@/lib/db";
 import { getQuestionById } from "@/data/dailyQuestions";
 
 type Body = { questionId?: string; answer?: string };
@@ -30,7 +31,12 @@ export const POST = withAuth(async (req, { auth }) => {
   const date = todayISO();
   const list = store.dailyAnswers.get(auth.userId) ?? [];
   if (!list.some((a) => a.date === date)) {
-    list.push({ questionId: body.questionId, answer: body.answer, date, answeredAt: new Date().toISOString() });
+    list.push({
+      questionId: body.questionId,
+      answer: body.answer,
+      date,
+      answeredAt: new Date().toISOString(),
+    });
     store.dailyAnswers.set(auth.userId, list);
 
     const prev = store.streaks.get(auth.userId);
@@ -42,6 +48,8 @@ export const POST = withAuth(async (req, { auth }) => {
       else current = 1;
     }
     store.streaks.set(auth.userId, { current, lastAnsweredDate: date });
+    await db.insertDailyAnswer(auth.userId, date, body.questionId, body.answer);
+    await db.upsertStrike(auth.userId, current, date);
   }
 
   const strike = store.streaks.get(auth.userId)!;

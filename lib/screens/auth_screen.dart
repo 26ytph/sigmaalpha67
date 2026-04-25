@@ -1,7 +1,9 @@
 import 'package:flutter/cupertino.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/models.dart';
 import '../services/app_repository.dart';
+import '../services/supabase_config.dart';
 import '../utils/theme.dart';
 
 /// 登入／註冊（demo 用 mock：任何合法 email + 4+ 字密碼即可通過）。
@@ -43,14 +45,50 @@ class _AuthScreenState extends State<AuthScreen> {
       _busy = true;
       _error = null;
     });
-    // Mock 「打 API」延遲
-    await Future<void>.delayed(const Duration(milliseconds: 700));
+
+    final email = _email.text.trim();
+    final password = _password.text;
+
+    String resolvedEmail = email;
+    try {
+      if (SupabaseConfig.isConfigured) {
+        // 真的 Supabase 流程
+        final auth = Supabase.instance.client.auth;
+        final response = _register
+            ? await auth.signUp(email: email, password: password)
+            : await auth.signInWithPassword(email: email, password: password);
+        final user = response.user;
+        if (user == null) {
+          throw const AuthException('沒有拿到使用者資訊');
+        }
+        resolvedEmail = user.email ?? email;
+      } else {
+        // 沒設定 Supabase → mock 流程，留時間讓 UI 顯示 loading
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+      }
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = e.message;
+      });
+      return;
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _error = '無法連線：$e';
+      });
+      return;
+    }
 
     final acc = UserAccount(
-      email: _email.text.trim(),
+      email: resolvedEmail,
       signedInAt: DateTime.now().toIso8601String(),
     );
-    final next = await AppRepository.update((prev) => prev.copyWith(account: acc));
+    final next = await AppRepository.update(
+      (prev) => prev.copyWith(account: acc),
+    );
     if (!mounted) return;
     setState(() => _busy = false);
     widget.onSignedIn(next);

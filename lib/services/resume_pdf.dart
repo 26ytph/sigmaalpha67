@@ -6,11 +6,19 @@ import 'package:printing/printing.dart';
 
 import '../models/models.dart';
 
+/// 履歷產生器：使用 Harshibar 風格的 LaTeX 模板（簡化版），
+/// 全部以「純文字 + 細線分隔」呈現 — 不使用任何 FontAwesome 圖示
+/// 與外框包字 (\myuline) 等裝飾。
+///
+/// 中文支援：LaTeX 用 xeCJK + Noto Sans TC（需要 xelatex 編譯）；
+/// PDF 用 Google Fonts 的 Noto Sans TC 動態下載字型。
 class ResumeBuilder {
   ResumeBuilder._();
 
-  /// 把 Profile + Persona 套到 LaTeX article 模板，回傳 .tex 原始碼。
-  /// 任何含中文的部分都會被 LaTeX 跳脫。
+  // ---------------------------------------------------------------------
+  // LaTeX
+  // ---------------------------------------------------------------------
+
   static String buildLatex(UserProfile p, Persona persona) {
     String esc(String s) => s
         .replaceAll(r'\', r'\textbackslash{}')
@@ -24,151 +32,307 @@ class ResumeBuilder {
         .replaceAll('~', r'\textasciitilde{}')
         .replaceAll('^', r'\textasciicircum{}');
 
+    // 標頭聯絡資訊（純文字，用 $|$ 分隔）
     final contactBits = <String>[
-      if (p.contact.isNotEmpty) p.contact,
+      if (p.email.isNotEmpty) p.email,
+      if (p.phone.isNotEmpty) p.phone,
       if (p.location.isNotEmpty) p.location,
-      if (p.school.isNotEmpty) p.school,
       if (p.age != null) '${p.age} 歲',
     ];
 
-    final buf = StringBuffer()
-      ..writeln(r'\documentclass[11pt]{article}')
+    final buf = StringBuffer();
+
+    // —— Preamble（沿用 Harshibar 結構，但移除 fontawesome / FiraMono / contour） ——
+    buf
+      ..writeln('%-------------------------')
+      ..writeln('% EmploYA Resume — Harshibar style (plain text, xelatex)')
+      ..writeln('%-------------------------')
+      ..writeln(r'\documentclass[letterpaper,11pt]{article}')
+      ..writeln(r'\usepackage{latexsym}')
+      ..writeln(r'\usepackage[empty]{fullpage}')
+      ..writeln(r'\usepackage{titlesec}')
+      ..writeln(r'\usepackage[usenames,dvipsnames]{color}')
+      ..writeln(r'\usepackage{enumitem}')
+      ..writeln(r'\usepackage[hidelinks]{hyperref}')
+      ..writeln(r'\usepackage{fancyhdr}')
+      ..writeln(r'\usepackage[english]{babel}')
+      ..writeln(r'\usepackage{tabularx}')
       ..writeln(r'\usepackage{xeCJK}')
       ..writeln(r'\setCJKmainfont{Noto Sans TC}')
-      ..writeln(r'\usepackage[margin=0.9in]{geometry}')
-      ..writeln(r'\usepackage{enumitem}')
-      ..writeln(r'\usepackage{titlesec}')
-      ..writeln(r'\titleformat{\section}{\large\bfseries}{}{0em}{}[\titlerule]')
-      ..writeln(r'\titlespacing*{\section}{0pt}{14pt}{6pt}')
-      ..writeln(r'\setlist[itemize]{leftmargin=1.2em,itemsep=2pt,topsep=2pt}')
-      ..writeln(r'\pagestyle{empty}')
-      ..writeln(r'\begin{document}')
+      ..writeln(r'\definecolor{light-grey}{gray}{0.83}')
+      ..writeln(r'\definecolor{dark-grey}{gray}{0.3}')
+      ..writeln(r'\definecolor{text-grey}{gray}{0.08}')
+      ..writeln(r'\pagestyle{fancy}')
+      ..writeln(r'\fancyhf{}')
+      ..writeln(r'\fancyfoot{}')
+      ..writeln(r'\renewcommand{\headrulewidth}{0pt}')
+      ..writeln(r'\renewcommand{\footrulewidth}{0pt}')
+      ..writeln(r'\addtolength{\oddsidemargin}{-0.5in}')
+      ..writeln(r'\addtolength{\evensidemargin}{0in}')
+      ..writeln(r'\addtolength{\textwidth}{1in}')
+      ..writeln(r'\addtolength{\topmargin}{-.5in}')
+      ..writeln(r'\addtolength{\textheight}{1.0in}')
+      ..writeln(r'\urlstyle{same}')
+      ..writeln(r'\raggedbottom')
+      ..writeln(r'\raggedright')
+      ..writeln(r'\setlength{\tabcolsep}{0in}')
       ..writeln()
-      ..writeln(r'\begin{center}')
-      ..writeln('{\\LARGE \\textbf{${esc(p.name.isEmpty ? '尚未命名' : p.name)}}}\\\\[2pt]')
-      ..writeln('\\small ${esc(contactBits.map(esc).join(r' $\cdot$ '))}')
-      ..writeln(r'\end{center}');
+      // sans-serif sections (與 Harshibar 完全一致)
+      ..writeln(r'\titleformat{\section}{')
+      ..writeln(r'    \bfseries \vspace{2pt} \raggedright \large')
+      ..writeln(r'}{}{0em}{}[\color{light-grey}{\titlerule[2pt]}\vspace{-4pt}]')
+      ..writeln()
+      // —— 自訂 commands（純文字版 — 移除 \myuline / faIcons） ——
+      ..writeln(r'\newcommand{\resumeItem}[1]{\item\small{{#1 \vspace{-1pt}}}}')
+      ..writeln(r'\newcommand{\resumeSubheading}[4]{')
+      ..writeln(r'  \vspace{-1pt}\item')
+      ..writeln(r'    \begin{tabular*}{\textwidth}[t]{l@{\extracolsep{\fill}}r}')
+      ..writeln(r'      \textbf{#1} & {\color{dark-grey}\small #2}\vspace{1pt}\\')
+      ..writeln(r'      \textit{#3} & {\color{dark-grey}\small #4}\\')
+      ..writeln(r'    \end{tabular*}\vspace{-4pt}}')
+      ..writeln(r'\newcommand{\resumeProjectHeading}[2]{')
+      ..writeln(r'  \item')
+      ..writeln(r'    \begin{tabular*}{\textwidth}{l@{\extracolsep{\fill}}r}')
+      ..writeln(r'      #1 & {\color{dark-grey}\small #2}\\')
+      ..writeln(r'    \end{tabular*}\vspace{-4pt}}')
+      ..writeln(r'\renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}')
+      ..writeln(r'\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0in, label={}]}')
+      ..writeln(r'\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}')
+      ..writeln(r'\newcommand{\resumeItemListStart}{\begin{itemize}}')
+      ..writeln(r'\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{0pt}}')
+      ..writeln(r'\color{text-grey}')
+      ..writeln()
+      ..writeln(r'\begin{document}')
+      ..writeln();
 
+    // —— Heading：純文字（無 icon） ——
+    buf
+      ..writeln('%----------HEADING----------')
+      ..writeln(r'\begin{center}')
+      ..writeln('    \\textbf{\\Huge ${esc(p.name.isEmpty ? '尚未命名' : p.name)}} \\\\\\vspace{5pt}');
+    if (contactBits.isNotEmpty) {
+      // 用 $|$ 分隔，純文字
+      final separated =
+          contactBits.map(esc).join(r' \hspace{1pt} $|$ \hspace{1pt} ');
+      buf.writeln('    \\small $separated \\\\\\vspace{-3pt}');
+    }
+    buf
+      ..writeln(r'\end{center}')
+      ..writeln();
+
+    // —— ABOUT ——（自介）
     if (persona.text.isNotEmpty) {
       buf
-        ..writeln(r'\section*{自介}')
-        ..writeln(esc(persona.text));
+        ..writeln('%----------ABOUT----------')
+        ..writeln(r'\section{ABOUT}')
+        ..writeln(r'\small ${esc(persona.text)}'.replaceFirst(
+            r'${esc(persona.text)}', esc(persona.text)))
+        ..writeln();
     }
 
+    // —— EDUCATION ——
     if (p.educationItems.isNotEmpty) {
       buf
-        ..writeln(r'\section*{學歷}')
-        ..writeln(r'\begin{itemize}');
+        ..writeln('%----------EDUCATION----------')
+        ..writeln(r'\section{EDUCATION}')
+        ..writeln(r'  \resumeSubHeadingListStart');
       for (final e in p.educationItems) {
-        buf.writeln('  \\item ${esc(e)}');
+        // 把學校 / 科系-年級 / location 排版到 resumeSubheading 的四個欄位
+        final school = esc(e.school.isEmpty ? '—' : e.school);
+        final dept = esc(e.department);
+        final grade = esc(e.grade);
+        final loc = esc(p.location);
+        final right2 = grade.isEmpty ? '' : grade;
+        buf.writeln('    \\resumeSubheading');
+        buf.writeln('      {$school}{$right2}');
+        buf.writeln('      {$dept}{$loc}');
       }
-      buf.writeln(r'\end{itemize}');
+      buf
+        ..writeln(r'  \resumeSubHeadingListEnd')
+        ..writeln();
     }
 
+    // —— EXPERIENCE ——（個人經歷 — 用 resumeProjectHeading 簡單列出）
     if (p.experiences.isNotEmpty) {
       buf
-        ..writeln(r'\section*{經歷}')
-        ..writeln(r'\begin{itemize}');
+        ..writeln('%----------EXPERIENCE----------')
+        ..writeln(r'\section{EXPERIENCE}')
+        ..writeln(r'  \resumeSubHeadingListStart');
       for (final e in p.experiences) {
-        buf.writeln('  \\item ${esc(e)}');
+        buf.writeln('    \\resumeProjectHeading');
+        buf.writeln('      {\\textbf{${esc(e)}}}{}');
       }
-      buf.writeln(r'\end{itemize}');
+      buf
+        ..writeln(r'  \resumeSubHeadingListEnd')
+        ..writeln();
     }
 
+    // —— SKILLS ——（純文字，逗號分隔，無 chip）
     if (persona.strengths.isNotEmpty) {
       buf
-        ..writeln(r'\section*{技能}')
-        ..writeln(esc(persona.strengths.join(r' $\cdot$ ')));
+        ..writeln('%----------SKILLS----------')
+        ..writeln(r'\section{SKILLS}')
+        ..writeln(r' \begin{itemize}[leftmargin=0in, label={}]')
+        ..writeln(r'    \small{\item{')
+        ..writeln('     ${esc(persona.strengths.join(', '))}')
+        ..writeln(r'    }}')
+        ..writeln(r' \end{itemize}')
+        ..writeln();
     }
 
+    // —— INTERESTS ——
     if (p.interests.isNotEmpty) {
       buf
-        ..writeln(r'\section*{興趣}')
-        ..writeln(esc(p.interests.join(r' $\cdot$ ')));
+        ..writeln('%----------INTERESTS----------')
+        ..writeln(r'\section{INTERESTS}')
+        ..writeln(r' \begin{itemize}[leftmargin=0in, label={}]')
+        ..writeln(r'    \small{\item{')
+        ..writeln('     ${esc(p.interests.join(', '))}')
+        ..writeln(r'    }}')
+        ..writeln(r' \end{itemize}')
+        ..writeln();
     }
 
+    // —— CURRENT FOCUS ——（目前方向 / 困擾）
     if (p.concerns.isNotEmpty) {
       buf
-        ..writeln(r'\section*{目前的方向／困擾}')
-        ..writeln(esc(p.concerns));
+        ..writeln('%----------CURRENT FOCUS----------')
+        ..writeln(r'\section{CURRENT FOCUS}')
+        ..writeln('\\small ${esc(p.concerns)}')
+        ..writeln();
     }
 
     buf
-      ..writeln()
       ..writeln(r'\end{document}');
-
     return buf.toString();
   }
 
-  /// 把 Profile + Persona 直接渲染成 PDF（中文字型由 Google Fonts 動態下載）。
+  // ---------------------------------------------------------------------
+  // PDF（直接用 pdf 套件渲染，視覺上對齊 LaTeX 純文字版）
+  // ---------------------------------------------------------------------
+
   static Future<Uint8List> buildPdf(UserProfile p, Persona persona) async {
     final regular = await PdfGoogleFonts.notoSansTCRegular();
     final bold = await PdfGoogleFonts.notoSansTCBold();
+    final italic = await PdfGoogleFonts.notoSansTCRegular();
 
     final doc = pw.Document();
-    final theme = pw.ThemeData.withFont(base: regular, bold: bold);
+    final theme = pw.ThemeData.withFont(
+      base: regular,
+      bold: bold,
+      italic: italic,
+      boldItalic: bold,
+    );
 
     final contactBits = <String>[
-      if (p.contact.isNotEmpty) p.contact,
+      if (p.email.isNotEmpty) p.email,
+      if (p.phone.isNotEmpty) p.phone,
       if (p.location.isNotEmpty) p.location,
-      if (p.school.isNotEmpty) p.school,
       if (p.age != null) '${p.age} 歲',
     ];
 
+    // —— Section heading：粗體 + 下方淡灰粗線（同 Harshibar 風） ——
     pw.Widget sectionHeading(String s) => pw.Container(
-          margin: const pw.EdgeInsets.only(top: 16, bottom: 6),
+          margin: const pw.EdgeInsets.only(top: 14, bottom: 4),
           padding: const pw.EdgeInsets.only(bottom: 4),
           decoration: const pw.BoxDecoration(
             border: pw.Border(
-              bottom: pw.BorderSide(color: PdfColors.grey400, width: 0.7),
+              bottom: pw.BorderSide(
+                color: PdfColor.fromInt(0xFFD4D4D4),
+                width: 1.6,
+              ),
             ),
           ),
           child: pw.Text(
             s,
-            style: pw.TextStyle(font: bold, fontSize: 14),
+            style: pw.TextStyle(font: bold, fontSize: 13.5),
           ),
         );
 
-    pw.Widget bulletList(List<String> items) => pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.start,
-          children: items
-              .map(
-                (e) => pw.Padding(
-                  padding: const pw.EdgeInsets.only(bottom: 3),
-                  child: pw.Row(
-                    crossAxisAlignment: pw.CrossAxisAlignment.start,
-                    children: [
-                      pw.Container(
-                        width: 4,
-                        height: 4,
-                        margin: const pw.EdgeInsets.only(top: 5, right: 6),
-                        decoration: const pw.BoxDecoration(
-                          color: PdfColors.grey700,
-                          shape: pw.BoxShape.circle,
-                        ),
-                      ),
-                      pw.Expanded(
-                        child: pw.Text(
-                          e,
-                          style: pw.TextStyle(fontSize: 11.5, lineSpacing: 2),
-                        ),
-                      ),
-                    ],
+    // —— 純文字段落（不用 bullet、不用底色） ——
+    pw.Widget paragraph(String s) => pw.Padding(
+          padding: const pw.EdgeInsets.only(top: 4, bottom: 4),
+          child: pw.Text(
+            s,
+            style: pw.TextStyle(
+              fontSize: 11,
+              lineSpacing: 3,
+              color: const PdfColor.fromInt(0xFF222222),
+            ),
+          ),
+        );
+
+    // —— 經歷 / 學歷：用 LaTeX resumeSubheading 的左右排版（不再用圓點 + 圓底色） ——
+    pw.Widget twoLineEntry({
+      required String topLeft,
+      String topRight = '',
+      String bottomLeft = '',
+      String bottomRight = '',
+    }) {
+      return pw.Padding(
+        padding: const pw.EdgeInsets.only(top: 4, bottom: 4),
+        child: pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+          children: [
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Expanded(
+                  child: pw.Text(
+                    topLeft,
+                    style: pw.TextStyle(font: bold, fontSize: 11.5),
                   ),
                 ),
-              )
-              .toList(),
-        );
+                if (topRight.isNotEmpty)
+                  pw.Text(
+                    topRight,
+                    style: pw.TextStyle(
+                      fontSize: 10.5,
+                      color: const PdfColor.fromInt(0xFF666666),
+                    ),
+                  ),
+              ],
+            ),
+            if (bottomLeft.isNotEmpty || bottomRight.isNotEmpty)
+              pw.Padding(
+                padding: const pw.EdgeInsets.only(top: 2),
+                child: pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                  children: [
+                    pw.Expanded(
+                      child: pw.Text(
+                        bottomLeft,
+                        style: pw.TextStyle(
+                          fontSize: 11,
+                          color: const PdfColor.fromInt(0xFF333333),
+                        ),
+                      ),
+                    ),
+                    if (bottomRight.isNotEmpty)
+                      pw.Text(
+                        bottomRight,
+                        style: pw.TextStyle(
+                          fontSize: 10.5,
+                          color: const PdfColor.fromInt(0xFF666666),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      );
+    }
 
     doc.addPage(
       pw.Page(
         pageFormat: PdfPageFormat.a4,
-        margin: const pw.EdgeInsets.fromLTRB(48, 56, 48, 48),
+        margin: const pw.EdgeInsets.fromLTRB(48, 48, 48, 48),
         theme: theme,
         build: (ctx) => pw.Column(
           crossAxisAlignment: pw.CrossAxisAlignment.start,
           children: [
-            // Header
+            // —— Heading ——
             pw.Center(
               child: pw.Text(
                 p.name.isEmpty ? '尚未命名' : p.name,
@@ -179,89 +343,55 @@ class ResumeBuilder {
             if (contactBits.isNotEmpty)
               pw.Center(
                 child: pw.Text(
-                  contactBits.join('  ·  '),
-                  style: pw.TextStyle(fontSize: 10.5, color: PdfColors.grey700),
+                  contactBits.join('  |  '),
+                  style: pw.TextStyle(
+                    fontSize: 10.5,
+                    color: const PdfColor.fromInt(0xFF555555),
+                  ),
                 ),
               ),
+            pw.SizedBox(height: 8),
 
-            // 自介
+            // —— ABOUT —— 自介
             if (persona.text.isNotEmpty) ...[
-              sectionHeading('自介'),
-              pw.Text(
-                persona.text,
-                style: pw.TextStyle(fontSize: 11.5, lineSpacing: 3),
-              ),
+              sectionHeading('ABOUT'),
+              paragraph(persona.text),
             ],
 
-            // 學歷
+            // —— EDUCATION ——
             if (p.educationItems.isNotEmpty) ...[
-              sectionHeading('學歷'),
-              bulletList(p.educationItems),
+              sectionHeading('EDUCATION'),
+              for (final e in p.educationItems)
+                twoLineEntry(
+                  topLeft: e.school.isEmpty ? '—' : e.school,
+                  topRight: e.grade,
+                  bottomLeft: e.department,
+                  bottomRight: p.location,
+                ),
             ],
 
-            // 經歷
+            // —— EXPERIENCE ——
             if (p.experiences.isNotEmpty) ...[
-              sectionHeading('經歷'),
-              bulletList(p.experiences),
+              sectionHeading('EXPERIENCE'),
+              for (final e in p.experiences) twoLineEntry(topLeft: e),
             ],
 
-            // 技能
+            // —— SKILLS —— 純文字，逗號分隔
             if (persona.strengths.isNotEmpty) ...[
-              sectionHeading('技能'),
-              pw.Wrap(
-                spacing: 6,
-                runSpacing: 4,
-                children: persona.strengths
-                    .map(
-                      (s) => pw.Container(
-                        padding: const pw.EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 3),
-                        decoration: pw.BoxDecoration(
-                          color: PdfColor.fromInt(0xFFFCE7F0),
-                          borderRadius: pw.BorderRadius.circular(10),
-                        ),
-                        child: pw.Text(
-                          s,
-                          style: pw.TextStyle(
-                              fontSize: 10.5,
-                              color: PdfColor.fromInt(0xFFB1295F)),
-                        ),
-                      ),
-                    )
-                    .toList(),
-              ),
+              sectionHeading('SKILLS'),
+              paragraph(persona.strengths.join('，')),
             ],
 
-            // 興趣
+            // —— INTERESTS ——
             if (p.interests.isNotEmpty) ...[
-              sectionHeading('興趣'),
-              pw.Wrap(
-                spacing: 6,
-                runSpacing: 4,
-                children: p.interests
-                    .map(
-                      (s) => pw.Container(
-                        padding: const pw.EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 3),
-                        decoration: pw.BoxDecoration(
-                          border: pw.Border.all(
-                              color: PdfColors.grey400, width: 0.6),
-                          borderRadius: pw.BorderRadius.circular(10),
-                        ),
-                        child: pw.Text(s, style: pw.TextStyle(fontSize: 10.5)),
-                      ),
-                    )
-                    .toList(),
-              ),
+              sectionHeading('INTERESTS'),
+              paragraph(p.interests.join('，')),
             ],
 
-            // 目前方向／困擾
+            // —— CURRENT FOCUS ——
             if (p.concerns.isNotEmpty) ...[
-              sectionHeading('目前方向 / 困擾'),
-              pw.Text(
-                p.concerns,
-                style: pw.TextStyle(fontSize: 11.5, lineSpacing: 3),
-              ),
+              sectionHeading('CURRENT FOCUS'),
+              paragraph(p.concerns),
             ],
           ],
         ),

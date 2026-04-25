@@ -26,7 +26,8 @@ class OnboardingScreen extends StatefulWidget {
 class _OnboardingScreenState extends State<OnboardingScreen> {
   late final TextEditingController _name;
   late final TextEditingController _school;
-  late final TextEditingController _contact;
+  late final TextEditingController _email;
+  late final TextEditingController _phone;
   late final TextEditingController _department;
   late final TextEditingController _location;
   late final TextEditingController _concerns;
@@ -88,7 +89,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final p = widget.initialProfile;
     _name = TextEditingController(text: p.name);
     _school = TextEditingController(text: p.school);
-    _contact = TextEditingController(text: p.contact);
+    _email = TextEditingController(text: p.email);
+    _phone = TextEditingController(text: p.phone);
     _department = TextEditingController(text: p.department);
     _location = TextEditingController(text: p.location);
     _concerns = TextEditingController(text: p.concerns);
@@ -106,7 +108,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   void dispose() {
     _name.dispose();
     _school.dispose();
-    _contact.dispose();
+    _email.dispose();
+    _phone.dispose();
     _department.dispose();
     _location.dispose();
     _concerns.dispose();
@@ -123,9 +126,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         final deptOk = _isHighSchool || _department.text.trim().isNotEmpty;
         return _name.text.trim().isNotEmpty && _grade.isNotEmpty && deptOk;
       case 1:
-        return _stage.isNotEmpty && _goals.isNotEmpty;
-      case 2:
+        // 路線選擇頁，總是可以繼續
         return true;
+      case 2:
+        // 創業者不用填目前階段，只需要至少 1 個目標
+        if (_startupInterest) return _goals.isNotEmpty;
+        return _stage.isNotEmpty && _goals.isNotEmpty;
       case 3:
         return _interests.isNotEmpty;
       case 4:
@@ -253,21 +259,22 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   Future<void> _finish() async {
     if (_saving) return;
-    final defaultEducation = [
-      _school.text.trim(),
-      if (!_isHighSchool) _department.text.trim(),
-      _grade,
-    ].where((s) => s.isNotEmpty).toList();
+    final defaultEntry = EducationEntry(
+      school: _school.text.trim(),
+      department: _isHighSchool ? '' : _department.text.trim(),
+      grade: _grade,
+    );
 
     final eduList = widget.initialProfile.educationItems.isNotEmpty
         ? widget.initialProfile.educationItems
-        : defaultEducation;
+        : (defaultEntry.isEmpty ? <EducationEntry>[] : [defaultEntry]);
 
     final profile = UserProfile(
       name: _name.text.trim(),
       school: _school.text.trim(),
       birthday: _birthday,
-      contact: _contact.text.trim(),
+      email: _email.text.trim(),
+      phone: _phone.text.trim(),
       department: _isHighSchool ? '' : _department.text.trim(),
       grade: _grade,
       location: _location.text.trim(),
@@ -405,9 +412,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       case 0:
         return _stepBasic(key: const ValueKey('s0'));
       case 1:
-        return _stepStage(key: const ValueKey('s1'));
+        return _stepStartup(key: const ValueKey('s1'));
       case 2:
-        return _stepStartup(key: const ValueKey('s2'));
+        return _stepStage(key: const ValueKey('s2'));
       case 3:
         return _stepInterests(key: const ValueKey('s3'));
       case 4:
@@ -575,10 +582,19 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   ),
           ),
           AppGaps.h12,
-          _label('聯絡方式（選填）'),
+          _label('Email（選填）'),
           CupertinoTextField(
-            controller: _contact,
-            placeholder: 'email 或 IG',
+            controller: _email,
+            placeholder: 'you@example.com',
+            keyboardType: TextInputType.emailAddress,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          ),
+          AppGaps.h12,
+          _label('電話（選填）'),
+          CupertinoTextField(
+            controller: _phone,
+            placeholder: '0912-345-678',
+            keyboardType: TextInputType.phone,
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           ),
           AppGaps.h12,
@@ -599,16 +615,23 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _heading('你目前在哪個階段？', 'Step 2 ・ 目前狀態'),
-          AppGaps.h16,
-          _label('你目前的狀態'),
-          _ChipGroup(
-            options: _stageOptions,
-            selected: {if (_stage.isNotEmpty) _stage},
-            onChanged: (s) => setState(() => _stage = s.isEmpty ? '' : s.first),
-            single: true,
+          _heading(
+            _startupInterest ? '想完成什麼？' : '你目前在哪個階段？',
+            'Step 3 ・ 目前狀態',
           ),
           AppGaps.h16,
+          // 創業者不用填目前階段
+          if (!_startupInterest) ...[
+            _label('你目前的狀態'),
+            _ChipGroup(
+              options: _stageOptions,
+              selected: {if (_stage.isNotEmpty) _stage},
+              onChanged: (s) =>
+                  setState(() => _stage = s.isEmpty ? '' : s.first),
+              single: true,
+            ),
+            AppGaps.h16,
+          ],
           _label('短期目標（可複選）'),
           _ChipGroup(
             options: _goalOptions,
@@ -636,7 +659,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _heading('選擇你的路線', 'Step 3'),
+          _heading('選擇你的路線', 'Step 2'),
           AppGaps.h20,
           Row(
             children: [

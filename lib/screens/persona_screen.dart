@@ -6,7 +6,6 @@ import '../models/models.dart';
 import '../services/app_repository.dart';
 import '../utils/theme.dart';
 import '../widgets/searchable_picker_sheet.dart';
-import 'onboarding_screen.dart';
 import 'resume_export_screen.dart';
 
 /// 履歷風格的「我」頁。各段（學歷／經歷／技能／興趣）皆可逐項點擊修改／刪除，
@@ -79,28 +78,12 @@ class _PersonaScreenState extends State<PersonaScreen> {
     setState(() => _summaryEditing = false);
   }
 
-  void _openProfileEditor() {
-    Navigator.of(context).push(
-      CupertinoPageRoute<void>(
-        builder: (_) => OnboardingScreen(
-          initialProfile: widget.storage.profile,
-          initialSelfIntro: widget.storage.persona.text,
-          editing: true,
-          onCompleted: (next) {
-            widget.onStorageChanged(next);
-            Navigator.of(context).pop();
-          },
-        ),
-      ),
-    );
-  }
-
   Future<void> _toggleStartupMode() async {
     final go = await showCupertinoDialog<bool>(
       context: context,
       builder: (ctx) => CupertinoAlertDialog(
         title: Text(
-          widget.storage.profile.startupInterest ? '切換回求職版本？' : '切換為創業版本？',
+          widget.storage.profile.startupInterest ? '切換回我要求職？' : '切換為我要創業？',
         ),
         content: Text(
           widget.storage.profile.startupInterest
@@ -142,17 +125,6 @@ class _PersonaScreenState extends State<PersonaScreen> {
       var profile = prev.profile;
       var persona = prev.persona;
       switch (section) {
-        case 'education':
-          final list = [...profile.educationItems];
-          if (index < 0) {
-            if (v.isNotEmpty) list.add(v);
-          } else if (v.isEmpty) {
-            list.removeAt(index);
-          } else {
-            list[index] = v;
-          }
-          profile = profile.copyWith(educationItems: list);
-          break;
         case 'experience':
           final list = [...profile.experiences];
           if (index < 0) {
@@ -222,14 +194,68 @@ class _PersonaScreenState extends State<PersonaScreen> {
         case 'location':
           p = p.copyWith(location: v);
           break;
-        case 'contact':
-          p = p.copyWith(contact: v);
+        case 'email':
+          p = p.copyWith(email: v);
+          break;
+        case 'phone':
+          p = p.copyWith(phone: v);
           break;
       }
       return prev.copyWith(profile: p);
     });
     await AppRepository.syncProfile(next.profile);
     setState(() => _personalEdit = null);
+  }
+
+  // —— 學歷：結構化編輯（學校／科系／年級）——
+  Future<void> _editEducation({EducationEntry? initial, int? index}) async {
+    final result = await showCupertinoModalPopup<EducationEntry?>(
+      context: context,
+      builder: (ctx) => _EducationEditSheet(initial: initial),
+    );
+    if (result == null) return; // user cancelled
+    final next = await _persist((prev) {
+      final list = [...prev.profile.educationItems];
+      if (result.isEmpty) {
+        if (index != null && index >= 0 && index < list.length) {
+          list.removeAt(index);
+        }
+      } else if (index == null) {
+        list.add(result);
+      } else {
+        list[index] = result;
+      }
+      return prev.copyWith(profile: prev.profile.copyWith(educationItems: list));
+    });
+    await AppRepository.syncProfile(next.profile);
+  }
+
+  Future<void> _confirmDeleteEducation(int index) async {
+    final list = widget.storage.profile.educationItems;
+    if (index < 0 || index >= list.length) return;
+    final go = await showCupertinoDialog<bool>(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: Text('移除「${list[index].displayLine}」？'),
+        actions: [
+          CupertinoDialogAction(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          CupertinoDialogAction(
+            isDestructiveAction: true,
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('移除'),
+          ),
+        ],
+      ),
+    );
+    if (go != true) return;
+    final next = await _persist((prev) {
+      final l = [...prev.profile.educationItems]..removeAt(index);
+      return prev.copyWith(profile: prev.profile.copyWith(educationItems: l));
+    });
+    await AppRepository.syncProfile(next.profile);
   }
 
   // —— 從字典（fixed list）新增技能／興趣 ——
@@ -366,17 +392,14 @@ class _PersonaScreenState extends State<PersonaScreen> {
             AppGaps.h20,
             _personalInfoSection(profile),
             AppGaps.h20,
-            _ListSection(
-              icon: CupertinoIcons.book_fill,
-              accentColor: AppColors.accentIndigo,
-              title: '學歷',
+            _EducationSection(
               items: profile.educationItems,
-              section: 'education',
-              chips: false,
-              activeEdit: _activeEdit,
-              onSetActive: (s) => setState(() => _activeEdit = s),
-              onSave: _saveListItem,
-              placeholder: '例如：台大社會系 大三',
+              onAdd: () => _editEducation(),
+              onEdit: (i) => _editEducation(
+                initial: profile.educationItems[i],
+                index: i,
+              ),
+              onDelete: _confirmDeleteEducation,
             ),
             AppGaps.h20,
             _ListSection(
@@ -506,7 +529,7 @@ class _PersonaScreenState extends State<PersonaScreen> {
                           ),
                           AppGaps.w4,
                           Text(
-                            isStartup ? '創業版本' : '求職版本',
+                            isStartup ? '我要創業' : '我要求職',
                             style: const TextStyle(
                               fontSize: 10,
                               fontWeight: FontWeight.w700,
@@ -543,50 +566,36 @@ class _PersonaScreenState extends State<PersonaScreen> {
             ],
           ),
           AppGaps.h16,
-          Row(
-            children: [
-              Expanded(
-                child: CupertinoButton(
-                  padding: const EdgeInsets.symmetric(vertical: 11),
-                  color: CupertinoColors.white,
-                  borderRadius: BorderRadius.circular(AppRadii.md),
-                  onPressed: _openProfileEditor,
-                  child: Text(
-                    '編輯資料',
+          SizedBox(
+            width: double.infinity,
+            child: CupertinoButton(
+              padding: const EdgeInsets.symmetric(vertical: 11),
+              color: CupertinoColors.white,
+              borderRadius: BorderRadius.circular(AppRadii.md),
+              onPressed: _openResume,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    CupertinoIcons.cloud_download_fill,
+                    size: 14,
+                    color: isStartup
+                        ? const Color(0xFFFE8A4F)
+                        : AppColors.brandStart,
+                  ),
+                  AppGaps.w6,
+                  Text(
+                    '下載履歷 PDF',
                     style: TextStyle(
                       color: isStartup
                           ? const Color(0xFFFE8A4F)
                           : AppColors.brandStart,
-                      fontWeight: FontWeight.w700,
+                      fontWeight: FontWeight.w800,
                     ),
                   ),
-                ),
+                ],
               ),
-              AppGaps.w8,
-              Expanded(
-                child: CupertinoButton(
-                  padding: const EdgeInsets.symmetric(vertical: 11),
-                  color: CupertinoColors.white.withValues(alpha: 0.22),
-                  borderRadius: BorderRadius.circular(AppRadii.md),
-                  onPressed: _openResume,
-                  child: const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(CupertinoIcons.cloud_download_fill,
-                          size: 14, color: CupertinoColors.white),
-                      AppGaps.w6,
-                      Text(
-                        '履歷 PDF',
-                        style: TextStyle(
-                          color: CupertinoColors.white,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
         ],
       ),
@@ -606,7 +615,7 @@ class _PersonaScreenState extends State<PersonaScreen> {
                     controller: _summary,
                     minLines: 5,
                     maxLines: 12,
-                    placeholder: '寫不出來也沒關係，留空就好。',
+                    placeholder: '寫一段自我介紹，讓 EmploYA 更懂你 ❤',
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
                       color: AppColors.bg,
@@ -672,7 +681,7 @@ class _PersonaScreenState extends State<PersonaScreen> {
                     Expanded(
                       child: persona.text.isEmpty
                           ? const Text(
-                              '尚未填寫自介。點此自己寫一段。',
+                              '寫一段自我介紹，讓 EmploYA 更懂你 ❤',
                               style: TextStyle(
                                 fontSize: 14,
                                 color: AppColors.textTertiary,
@@ -702,7 +711,7 @@ class _PersonaScreenState extends State<PersonaScreen> {
 
   Widget _personalInfoSection(UserProfile p) {
     return _IosSection(
-      header: '個人資料',
+      header: '基本資料',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -743,13 +752,23 @@ class _PersonaScreenState extends State<PersonaScreen> {
           ),
           const _IosDivider(),
           _IosListRow(
-            label: '聯絡方式',
-            value: p.contact,
-            placeholder: 'email / IG',
-            active: _personalEdit == 'contact',
-            onActivate: () => setState(() => _personalEdit = 'contact'),
+            label: 'Email',
+            value: p.email,
+            placeholder: 'you@example.com',
+            active: _personalEdit == 'email',
+            onActivate: () => setState(() => _personalEdit = 'email'),
             onCancel: () => setState(() => _personalEdit = null),
-            onSave: (v) => _savePersonalField('contact', v),
+            onSave: (v) => _savePersonalField('email', v),
+          ),
+          const _IosDivider(),
+          _IosListRow(
+            label: '電話',
+            value: p.phone,
+            placeholder: '0912-345-678',
+            active: _personalEdit == 'phone',
+            onActivate: () => setState(() => _personalEdit = 'phone'),
+            onCancel: () => setState(() => _personalEdit = null),
+            onSave: (v) => _savePersonalField('phone', v),
           ),
         ],
       ),
@@ -821,7 +840,7 @@ class _PersonaScreenState extends State<PersonaScreen> {
               AppGaps.w10,
               Expanded(
                 child: Text(
-                  isStartup ? '切換回求職版本' : '切換為創業版本',
+                  isStartup ? '切回我要求職' : '我要創業 🔥❤',
                   style: const TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w500,
@@ -1129,6 +1148,403 @@ class _IosListRowState extends State<_IosListRow> {
               color: AppColors.textTertiary,
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 學歷區塊：列出每筆 EducationEntry，點擊整列 → 結構化 sheet 編輯。
+class _EducationSection extends StatelessWidget {
+  const _EducationSection({
+    required this.items,
+    required this.onAdd,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  final List<EducationEntry> items;
+  final VoidCallback onAdd;
+  final ValueChanged<int> onEdit;
+  final ValueChanged<int> onDelete;
+
+  static const _accent = AppColors.accentIndigo;
+
+  @override
+  Widget build(BuildContext context) {
+    return _IosSection(
+      header: '學歷',
+      trailing: CupertinoButton(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        minimumSize: Size.zero,
+        onPressed: onAdd,
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(CupertinoIcons.add_circled_solid, size: 14, color: _accent),
+            AppGaps.w4,
+            Text('新增',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                  color: _accent,
+                )),
+          ],
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+        child: items.isEmpty
+            ? const Padding(
+                padding: EdgeInsets.symmetric(vertical: 4),
+                child: Text(
+                  '點右上角「+ 新增」加入第一筆學歷（學校／科系／年級）',
+                  style: TextStyle(fontSize: 13, color: AppColors.textTertiary),
+                ),
+              )
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (var i = 0; i < items.length; i++)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: _EducationRow(
+                        index: i,
+                        entry: items[i],
+                        onEdit: () => onEdit(i),
+                        onDelete: () => onDelete(i),
+                      ),
+                    ),
+                ],
+              ),
+      ),
+    );
+  }
+}
+
+class _EducationRow extends StatelessWidget {
+  const _EducationRow({
+    required this.index,
+    required this.entry,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  final int index;
+  final EducationEntry entry;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.bg,
+        borderRadius: BorderRadius.circular(AppRadii.sm),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 8, 6),
+            child: Row(
+              children: [
+                Container(
+                  width: 22,
+                  height: 22,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: AppColors.accentIndigo.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    '${index + 1}',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.accentIndigo,
+                    ),
+                  ),
+                ),
+                AppGaps.w8,
+                Expanded(
+                  child: Text(
+                    '學歷 ${index + 1}',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ),
+                CupertinoButton(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  minimumSize: Size.zero,
+                  onPressed: onEdit,
+                  child: const Text(
+                    '編輯',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.accentIndigo,
+                    ),
+                  ),
+                ),
+                CupertinoButton(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  minimumSize: Size.zero,
+                  onPressed: onDelete,
+                  child: const Text(
+                    '刪除',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.iosRed,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _EduSubItem(label: '學校', value: entry.school),
+                _EduSubItem(label: '科系', value: entry.department),
+                _EduSubItem(label: '年級', value: entry.grade),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EduSubItem extends StatelessWidget {
+  const _EduSubItem({required this.label, required this.value});
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 56,
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 12,
+                color: AppColors.textTertiary,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value.isEmpty ? '—' : value,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color:
+                    value.isEmpty ? AppColors.textTertiary : AppColors.textPrimary,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 學歷編輯 sheet：分別輸入學校／科系／年級。
+class _EducationEditSheet extends StatefulWidget {
+  const _EducationEditSheet({this.initial});
+  final EducationEntry? initial;
+
+  @override
+  State<_EducationEditSheet> createState() => _EducationEditSheetState();
+}
+
+class _EducationEditSheetState extends State<_EducationEditSheet> {
+  late final TextEditingController _school;
+  late final TextEditingController _department;
+  String _grade = '';
+
+  static const _gradeOptions = [
+    '高中', '大一', '大二', '大三', '大四', '研究生', '畢業',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _school = TextEditingController(text: widget.initial?.school ?? '');
+    _department = TextEditingController(text: widget.initial?.department ?? '');
+    _grade = widget.initial?.grade ?? '';
+  }
+
+  @override
+  void dispose() {
+    _school.dispose();
+    _department.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(
+            20, 12, 20,
+            16 + MediaQuery.of(context).viewInsets.bottom,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Center(
+                child: Container(
+                  width: 40, height: 4,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFD4D4D8),
+                    borderRadius: BorderRadius.circular(AppRadii.pill),
+                  ),
+                ),
+              ),
+              AppGaps.h12,
+              const Text(
+                '編輯學歷',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              AppGaps.h12,
+              const Text('學校',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textSecondary,
+                  )),
+              AppGaps.h6,
+              CupertinoTextField(
+                controller: _school,
+                placeholder: '例如：國立台灣大學',
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              ),
+              AppGaps.h12,
+              const Text('科系',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textSecondary,
+                  )),
+              AppGaps.h6,
+              CupertinoTextField(
+                controller: _department,
+                placeholder: '例如：社會系；高中可留空',
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              ),
+              AppGaps.h12,
+              const Text('年級',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textSecondary,
+                  )),
+              AppGaps.h6,
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final g in _gradeOptions)
+                    CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      minimumSize: Size.zero,
+                      onPressed: () => setState(() => _grade = g),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 8),
+                        decoration: BoxDecoration(
+                          gradient: _grade == g
+                              ? AppColors.brandGradient
+                              : null,
+                          color: _grade == g
+                              ? null
+                              : AppColors.surfaceMuted,
+                          borderRadius: BorderRadius.circular(AppRadii.pill),
+                        ),
+                        child: Text(
+                          g,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: _grade == g
+                                ? CupertinoColors.white
+                                : AppColors.textPrimary,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              AppGaps.h20,
+              Row(
+                children: [
+                  Expanded(
+                    child: CupertinoButton(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      color: AppColors.surfaceMuted,
+                      borderRadius: BorderRadius.circular(AppRadii.md),
+                      onPressed: () => Navigator.of(context).pop(null),
+                      child: const Text(
+                        '取消',
+                        style: TextStyle(
+                          color: AppColors.textPrimary,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ),
+                  AppGaps.w8,
+                  Expanded(
+                    flex: 2,
+                    child: CupertinoButton(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      color: AppColors.brandStart,
+                      borderRadius: BorderRadius.circular(AppRadii.md),
+                      onPressed: () {
+                        final entry = EducationEntry(
+                          school: _school.text.trim(),
+                          department: _department.text.trim(),
+                          grade: _grade,
+                        );
+                        Navigator.of(context).pop(entry);
+                      },
+                      child: const Text(
+                        '儲存',
+                        style: TextStyle(
+                          color: CupertinoColors.white,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

@@ -10,7 +10,7 @@ type Handler<T> = (
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function withAuth<T = any>(handler: Handler<T>) {
   return async (req: NextRequest, route: { params: Promise<T> }) => {
-    const auth = authenticate(req);
+    const auth = await authenticate(req);
     if (!auth) return apiError("unauthorized", "Missing or invalid Bearer token.");
     const params = await route.params;
     try {

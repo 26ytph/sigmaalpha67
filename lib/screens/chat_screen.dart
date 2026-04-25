@@ -180,14 +180,6 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
   }
 
-  void _clear() {
-    setState(() {
-      _messages
-        ..clear()
-        ..add(_greeting());
-    });
-  }
-
   void _showCounselorBrief(ChatMessage userMsg) {
     final n = userMsg.normalized;
     if (n == null) return;
@@ -212,11 +204,13 @@ class _ChatScreenState extends State<ChatScreen> {
       navigationBar: CupertinoNavigationBar(
         backgroundColor: AppColors.surface.withValues(alpha: 0.92),
         border: const Border(bottom: BorderSide(color: AppColors.border)),
-        middle: const Text('AI 小幫手'),
-        trailing: CupertinoButton(
-          padding: EdgeInsets.zero,
-          onPressed: _messages.length <= 1 ? null : _clear,
-          child: const Text('清空', style: TextStyle(fontSize: 15)),
+        middle: const Text(
+          'YAYA - AI 職涯小助理',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w800,
+            color: AppColors.textPrimary,
+          ),
         ),
       ),
       child: SafeArea(
@@ -802,7 +796,7 @@ class _Composer extends StatelessWidget {
               minLines: 1,
               maxLines: 5,
               enabled: enabled,
-              placeholder: '想問什麼？口語就行…',
+              placeholder: '和 YAYA 說說你的職涯小煩惱…',
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               decoration: BoxDecoration(
                 color: AppColors.surfaceMuted,

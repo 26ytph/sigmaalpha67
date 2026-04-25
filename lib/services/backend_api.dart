@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/models.dart';
+import 'supabase_config.dart';
 
 class BackendChatReply {
   const BackendChatReply({
@@ -41,7 +43,24 @@ class BackendApi {
     defaultValue: 'http://localhost:3001',
   );
 
-  static const String token = String.fromEnvironment(
+  /// 取代舊的硬編 token —— 優先使用 Supabase 的 JWT；
+  /// 若 Supabase 未設定或還沒登入，再 fall back 到 build-time 的
+  /// `EMPLOYA_API_TOKEN`，最後才用 'demo-user'。
+  static String _resolveToken() {
+    if (SupabaseConfig.isConfigured) {
+      try {
+        final session = Supabase.instance.client.auth.currentSession;
+        if (session != null && session.accessToken.isNotEmpty) {
+          return session.accessToken;
+        }
+      } catch (_) {
+        // Supabase.initialize 還沒跑或失敗
+      }
+    }
+    return _fallbackToken;
+  }
+
+  static const String _fallbackToken = String.fromEnvironment(
     'EMPLOYA_API_TOKEN',
     defaultValue: 'demo-user',
   );
@@ -241,7 +260,7 @@ class BackendApi {
   }) async {
     final uri = Uri.parse('$baseUrl$path');
     final headers = {
-      'authorization': 'Bearer $token',
+      'authorization': 'Bearer ${_resolveToken()}',
       'content-type': 'application/json; charset=utf-8',
     };
 
@@ -289,7 +308,8 @@ class BackendApi {
     'school': p.school,
     'birthday': p.birthday,
     'age': p.age,
-    'contact': p.contact,
+    'email': p.email,
+    'phone': p.phone,
     'department': p.department,
     'grade': p.grade,
     'location': p.location,
@@ -297,7 +317,7 @@ class BackendApi {
     'goals': p.goals,
     'interests': p.interests,
     'experiences': p.experiences,
-    'educationItems': p.educationItems,
+    'educationItems': p.educationItems.map((e) => e.toJson()).toList(),
     'concerns': p.concerns,
     'startupInterest': p.startupInterest,
   };
@@ -310,7 +330,8 @@ class BackendApi {
       name: (j['name'] as String?) ?? fallback.name,
       school: (j['school'] as String?) ?? fallback.school,
       birthday: (j['birthday'] as String?) ?? fallback.birthday,
-      contact: (j['contact'] as String?) ?? fallback.contact,
+      email: (j['email'] as String?) ?? fallback.email,
+      phone: (j['phone'] as String?) ?? fallback.phone,
       department: (j['department'] as String?) ?? fallback.department,
       grade: (j['grade'] as String?) ?? fallback.grade,
       location: (j['location'] as String?) ?? fallback.location,
@@ -322,9 +343,15 @@ class BackendApi {
       experiences: List<String>.from(
         (j['experiences'] as List?) ?? fallback.experiences,
       ),
-      educationItems: List<String>.from(
-        (j['educationItems'] as List?) ?? fallback.educationItems,
-      ),
+      educationItems: ((j['educationItems'] as List?) ?? const [])
+          .map((e) {
+            if (e is Map) {
+              return EducationEntry.fromJson(Map<String, dynamic>.from(e));
+            }
+            return EducationEntry.parseFromLine(e?.toString() ?? '');
+          })
+          .where((e) => !e.isEmpty)
+          .toList(),
       concerns: (j['concerns'] as String?) ?? fallback.concerns,
       startupInterest:
           (j['startupInterest'] as bool?) ?? fallback.startupInterest,

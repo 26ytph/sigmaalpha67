@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { withAuth, readJson } from "@/lib/route";
 import { apiError } from "@/lib/errors";
 import { store } from "@/lib/store";
+import * as db from "@/lib/db";
 
 type Body = { note?: string };
 
@@ -18,5 +19,9 @@ export const PUT = withAuth<{ week: string }>(async (req, { auth, params }) => {
   };
   state.weekNotes[params.week] = body.note;
   store.plans.set(auth.userId, state);
+  const weekNum = parseInt(params.week, 10);
+  if (Number.isFinite(weekNum)) {
+    await db.upsertWeekNote(auth.userId, weekNum, body.note);
+  }
   return NextResponse.json({ week: params.week, note: body.note });
 });

@@ -1,4 +1,5 @@
 import 'package:flutter/cupertino.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'models/models.dart';
 import 'screens/auth_screen.dart';
@@ -12,10 +13,18 @@ import 'screens/plan_screen.dart';
 import 'screens/plan_todos_screen.dart';
 import 'screens/skill_translator_screen.dart';
 import 'services/app_repository.dart';
+import 'services/supabase_config.dart';
 import 'utils/theme.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 只有 SUPABASE_URL/ANON_KEY 都填了才初始化；否則 app 會 fall back 到本機 mock。
+  if (SupabaseConfig.isConfigured) {
+    await Supabase.initialize(
+      url: SupabaseConfig.supabaseUrl,
+      anonKey: SupabaseConfig.supabaseAnonKey,
+    );
+  }
   runApp(const EmployaApp());
 }
 
@@ -46,8 +55,6 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   AppStorage? _storage;
   int _tabIndex = 0;
-  // 「我」：0 = Persona, 1 = Skill Translator
-  int _meSubIndex = 0;
   // 「計畫」：0 = 路線總覽, 1 = 路線圖, 2 = 週任務
   int _planSubIndex = 0;
 
@@ -69,17 +76,23 @@ class _AppShellState extends State<AppShell> {
 
   void _goTo(int i) => setState(() => _tabIndex = i);
 
-  void _openSkillTranslator() {
-    setState(() {
-      _tabIndex = 2;
-      _meSubIndex = 1;
-    });
+  // 從首頁／其他地方需要打開技能翻譯時，push 一個 route 上去（不是 tab）。
+  void _openSkillTranslatorRoute() {
+    final storage = _storage;
+    if (storage == null) return;
+    Navigator.of(context).push(
+      CupertinoPageRoute<void>(
+        builder: (_) => SkillTranslatorScreen(
+          storage: storage,
+          onStorageChanged: _setStorage,
+        ),
+      ),
+    );
   }
 
   void _openPersona() {
     setState(() {
       _tabIndex = 2;
-      _meSubIndex = 0;
     });
   }
 
@@ -108,44 +121,12 @@ class _AppShellState extends State<AppShell> {
       );
     }
 
-    final mePane = _meSubIndex == 0
-        ? PersonaScreen(
-            storage: storage,
-            onStorageChanged: _setStorage,
-            onGoToExplore: () => _goTo(1),
-            onGoToSkillTranslator: () => setState(() => _meSubIndex = 1),
-          )
-        : SkillTranslatorScreen(
-            storage: storage,
-            onStorageChanged: _setStorage,
-          );
-
-    final meTab = Column(
-      children: [
-        Container(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-          color: AppColors.surface,
-          child: SafeArea(
-            bottom: false,
-            child: Row(
-              children: [
-                _SubTab(
-                  label: 'Persona',
-                  selected: _meSubIndex == 0,
-                  onTap: () => setState(() => _meSubIndex = 0),
-                ),
-                AppGaps.w8,
-                _SubTab(
-                  label: '技能翻譯',
-                  selected: _meSubIndex == 1,
-                  onTap: () => setState(() => _meSubIndex = 1),
-                ),
-              ],
-            ),
-          ),
-        ),
-        Expanded(child: mePane),
-      ],
+    // 「我」分頁：直接顯示 PersonaScreen；技能翻譯改為 push route。
+    final meTab = PersonaScreen(
+      storage: storage,
+      onStorageChanged: _setStorage,
+      onGoToExplore: () => _goTo(1),
+      onGoToSkillTranslator: _openSkillTranslatorRoute,
     );
 
     final planPane = Column(
@@ -215,7 +196,7 @@ class _AppShellState extends State<AppShell> {
                   onStartExplore: () => _goTo(1),
                   onOpenPlan: () => _goTo(3),
                   onOpenPersona: _openPersona,
-                  onOpenSkillTranslator: _openSkillTranslator,
+                  onOpenSkillTranslator: _openSkillTranslatorRoute,
                   onOpenChat: () => _goTo(4),
                 ),
                 ExploreScreen(
@@ -254,7 +235,7 @@ class _AppShellState extends State<AppShell> {
               ),
               BottomNavigationBarItem(
                 icon: Icon(CupertinoIcons.chat_bubble_2_fill),
-                label: 'AI',
+                label: 'AI 諮詢',
               ),
             ],
           ),

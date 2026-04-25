@@ -178,6 +178,65 @@ class StrikeState {
 /// App 模式：求職或創業（由 UserProfile.startupInterest 推導）
 enum AppMode { career, startup }
 
+/// 學歷一筆：學校／科系／年級三欄
+class EducationEntry {
+  const EducationEntry({
+    required this.school,
+    required this.department,
+    required this.grade,
+  });
+
+  final String school;
+  final String department;
+  final String grade;
+
+  bool get isEmpty =>
+      school.isEmpty && department.isEmpty && grade.isEmpty;
+
+  /// 把三欄拼成單行（給 LaTeX 履歷或舊有 List<String> 介面用）
+  String get displayLine {
+    final parts = [school, department, grade].where((s) => s.isNotEmpty);
+    return parts.join(' ・ ');
+  }
+
+  EducationEntry copyWith({String? school, String? department, String? grade}) =>
+      EducationEntry(
+        school: school ?? this.school,
+        department: department ?? this.department,
+        grade: grade ?? this.grade,
+      );
+
+  Map<String, dynamic> toJson() =>
+      {'school': school, 'department': department, 'grade': grade};
+
+  static EducationEntry fromJson(Map<String, dynamic> j) => EducationEntry(
+        school: (j['school'] as String?) ?? '',
+        department: (j['department'] as String?) ?? '',
+        grade: (j['grade'] as String?) ?? '',
+      );
+
+  /// 從舊有的 'school 系所 年級' 單行字串解析成結構化欄位（best-effort）。
+  static EducationEntry parseFromLine(String line) {
+    final parts = line.split(RegExp(r'[\s・·\|/，,]+'))
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (parts.isEmpty) {
+      return const EducationEntry(school: '', department: '', grade: '');
+    }
+    if (parts.length == 1) {
+      return EducationEntry(school: parts[0], department: '', grade: '');
+    }
+    if (parts.length == 2) {
+      return EducationEntry(school: parts[0], department: parts[1], grade: '');
+    }
+    return EducationEntry(
+      school: parts[0],
+      department: parts[1],
+      grade: parts.sublist(2).join(' '),
+    );
+  }
+}
+
 /// 帳號（demo 用：只保留 email 與登入時間，密碼不存）
 class UserAccount {
   const UserAccount({required this.email, this.signedInAt});
@@ -212,7 +271,8 @@ class UserProfile {
     required this.name,
     required this.school,
     required this.birthday,
-    required this.contact,
+    required this.email,
+    required this.phone,
     required this.department,
     required this.grade,
     required this.location,
@@ -231,7 +291,8 @@ class UserProfile {
 
   /// 'YYYY-MM-DD' 格式的合法日期字串；空字串表示未填。
   final String birthday;
-  final String contact;
+  final String email;
+  final String phone;
   final String department;
   final String grade;
   final String location;
@@ -239,10 +300,18 @@ class UserProfile {
   final List<String> goals;
   final List<String> interests;
   final List<String> experiences;
-  final List<String> educationItems;
+  final List<EducationEntry> educationItems;
   final String concerns;
   final bool startupInterest;
   final String? createdAt;
+
+  /// 顯示用：拼起來的 email + phone（用於現有顯示位置）
+  String get contact {
+    final parts = <String>[];
+    if (email.isNotEmpty) parts.add(email);
+    if (phone.isNotEmpty) parts.add(phone);
+    return parts.join(' / ');
+  }
 
   bool get isEmpty {
     // 高中生不需要填科系，所以 isEmpty 不能單看 department。
@@ -277,7 +346,8 @@ class UserProfile {
     String? name,
     String? school,
     String? birthday,
-    String? contact,
+    String? email,
+    String? phone,
     String? department,
     String? grade,
     String? location,
@@ -285,7 +355,7 @@ class UserProfile {
     List<String>? goals,
     List<String>? interests,
     List<String>? experiences,
-    List<String>? educationItems,
+    List<EducationEntry>? educationItems,
     String? concerns,
     bool? startupInterest,
     String? createdAt,
@@ -294,7 +364,8 @@ class UserProfile {
       name: name ?? this.name,
       school: school ?? this.school,
       birthday: birthday ?? this.birthday,
-      contact: contact ?? this.contact,
+      email: email ?? this.email,
+      phone: phone ?? this.phone,
       department: department ?? this.department,
       grade: grade ?? this.grade,
       location: location ?? this.location,
@@ -313,7 +384,8 @@ class UserProfile {
         name: '',
         school: '',
         birthday: '',
-        contact: '',
+        email: '',
+        phone: '',
         department: '',
         grade: '',
         location: '',
@@ -330,7 +402,8 @@ class UserProfile {
         'name': name,
         'school': school,
         'birthday': birthday,
-        'contact': contact,
+        'email': email,
+        'phone': phone,
         'department': department,
         'grade': grade,
         'location': location,
@@ -338,18 +411,21 @@ class UserProfile {
         'goals': goals,
         'interests': interests,
         'experiences': experiences,
-        'educationItems': educationItems,
+        'educationItems': educationItems.map((e) => e.toJson()).toList(),
         'concerns': concerns,
         'startupInterest': startupInterest,
         'createdAt': createdAt,
       };
 
   static UserProfile fromJson(Map<String, dynamic> j) {
+    // 兼容舊資料：原本只有單一 'contact' 欄位 → 把它當 email 還原。
+    final legacyContact = (j['contact'] as String?) ?? '';
     return UserProfile(
       name: (j['name'] as String?) ?? '',
       school: (j['school'] as String?) ?? '',
       birthday: (j['birthday'] as String?) ?? '',
-      contact: (j['contact'] as String?) ?? '',
+      email: (j['email'] as String?) ?? legacyContact,
+      phone: (j['phone'] as String?) ?? '',
       department: (j['department'] as String?) ?? '',
       grade: (j['grade'] as String?) ?? '',
       location: (j['location'] as String?) ?? '',
@@ -357,7 +433,16 @@ class UserProfile {
       goals: List<String>.from((j['goals'] as List?) ?? const []),
       interests: List<String>.from((j['interests'] as List?) ?? const []),
       experiences: List<String>.from((j['experiences'] as List?) ?? const []),
-      educationItems: List<String>.from((j['educationItems'] as List?) ?? const []),
+      educationItems: ((j['educationItems'] as List?) ?? const [])
+          .map((e) {
+            if (e is Map) {
+              return EducationEntry.fromJson(Map<String, dynamic>.from(e));
+            }
+            // 兼容舊格式：字串就 best-effort 解析
+            return EducationEntry.parseFromLine(e?.toString() ?? '');
+          })
+          .where((e) => !e.isEmpty)
+          .toList(),
       concerns: (j['concerns'] as String?) ?? '',
       startupInterest: j['startupInterest'] == true,
       createdAt: j['createdAt'] as String?,
