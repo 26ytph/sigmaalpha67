@@ -199,3 +199,10 @@ junit.xml
 .local/
 **/local.properties
 *.local.dart
+backend/package-lock.json
+backend/package.json
+backend/pnpm-lock.yaml
+supabase/README.md
+supabase/schema.sql
+supabase/seed.sql
+backend/package.json

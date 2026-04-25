@@ -30,11 +30,20 @@ class _ResumeExportScreenState extends State<ResumeExportScreen> {
   late final String _latex =
       ResumeBuilder.buildLatex(widget.profile, widget.persona);
 
-  Future<Uint8List> _pdf(_) =>
-      ResumeBuilder.buildPdf(widget.profile, widget.persona);
+  // Render once per screen instance — PdfPreview rebuilds, _download and
+  // _print all share this future, so the heavy CJK font subsetting only
+  // runs a single time.
+  Future<Uint8List>? _pdfFuture;
+
+  Future<Uint8List> _ensurePdf() {
+    return _pdfFuture ??=
+        ResumeBuilder.buildPdf(widget.profile, widget.persona);
+  }
+
+  Future<Uint8List> _pdf(_) => _ensurePdf();
 
   Future<void> _download() async {
-    final bytes = await ResumeBuilder.buildPdf(widget.profile, widget.persona);
+    final bytes = await _ensurePdf();
     final filename =
         '${widget.profile.name.isEmpty ? "resume" : widget.profile.name}_resume.pdf';
     await Printing.sharePdf(bytes: bytes, filename: filename);

@@ -109,6 +109,12 @@ class _SkillTranslatorScreenState extends State<SkillTranslatorScreen> {
     return CupertinoPageScaffold(
       backgroundColor: AppColors.bg,
       navigationBar: CupertinoNavigationBar(
+        // transitionBetweenRoutes:false — this screen is also rendered as
+        // a sub-tab inside AppShell's IndexedStack, where it shares the
+        // default hero tag with sibling tabs' nav bars and crashes the
+        // iOS back-swipe gesture. When pushed as a standalone route from
+        // main.dart this just disables nav-bar fly animation, which is fine.
+        transitionBetweenRoutes: false,
         backgroundColor: AppColors.surface,
         border: const Border(bottom: BorderSide(color: AppColors.border)),
         leading: CupertinoButton(

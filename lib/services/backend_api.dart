@@ -14,6 +14,49 @@ class RagSource {
   final String? url;
 }
 
+/// 後端 `/api/chat/conversations` 列出的單筆對話摘要
+class ConversationSummary {
+  const ConversationSummary({
+    required this.id,
+    required this.mode,
+    required this.createdAt,
+  });
+
+  final String id;
+  final AppMode mode;
+  final String createdAt;
+}
+
+/// 後端傳回的單則訊息（chat_messages 一筆 row）
+class RemoteChatMessage {
+  const RemoteChatMessage({
+    required this.id,
+    required this.role,
+    required this.text,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String role; // 'user' | 'assistant'
+  final String text;
+  final String createdAt;
+
+  bool get fromUser => role == 'user';
+}
+
+/// 一段完整的對話歷史
+class ConversationHistory {
+  const ConversationHistory({
+    required this.id,
+    required this.mode,
+    required this.messages,
+  });
+
+  final String id;
+  final AppMode mode;
+  final List<RemoteChatMessage> messages;
+}
+
 class BackendChatReply {
   const BackendChatReply({
     required this.conversationId,
@@ -119,6 +162,73 @@ class BackendApi {
         return _personaFromJson(Map<String, dynamic>.from(raw));
       }
       return null;
+    } on BackendApiException catch (e) {
+      if (e.message.contains('404') || e.message.contains('not_found')) {
+        return null;
+      }
+      rethrow;
+    }
+  }
+
+  /// 列出該使用者的對話清單（後端會優先讀 Supabase）。
+  static Future<List<ConversationSummary>> listConversations() async {
+    try {
+      final data = await _request('GET', '/api/chat/conversations');
+      final raw = data['conversations'];
+      if (raw is! List) return const [];
+      return raw
+          .whereType<Map>()
+          .map((m) {
+            final mm = Map<String, dynamic>.from(m);
+            return ConversationSummary(
+              id: (mm['id'] as String?) ?? '',
+              mode: (mm['mode'] as String?) == 'startup'
+                  ? AppMode.startup
+                  : AppMode.career,
+              createdAt: (mm['createdAt'] as String?) ?? '',
+            );
+          })
+          .where((c) => c.id.isNotEmpty)
+          .toList();
+    } on BackendApiException {
+      return const [];
+    }
+  }
+
+  /// 抓某段對話的全部訊息（依 created_at 由舊到新）。
+  static Future<ConversationHistory?> fetchConversationMessages(
+    String conversationId,
+  ) async {
+    try {
+      final data = await _request(
+        'GET',
+        '/api/chat/conversations/${Uri.encodeComponent(conversationId)}/messages',
+      );
+      final mode = (data['mode'] as String?) == 'startup'
+          ? AppMode.startup
+          : AppMode.career;
+      final rawMsgs = data['messages'];
+      final msgs = <RemoteChatMessage>[];
+      if (rawMsgs is List) {
+        for (final m in rawMsgs) {
+          if (m is Map) {
+            final mm = Map<String, dynamic>.from(m);
+            msgs.add(
+              RemoteChatMessage(
+                id: (mm['id'] as String?) ?? '',
+                role: (mm['role'] as String?) ?? 'assistant',
+                text: (mm['text'] as String?) ?? '',
+                createdAt: (mm['createdAt'] as String?) ?? '',
+              ),
+            );
+          }
+        }
+      }
+      return ConversationHistory(
+        id: conversationId,
+        mode: mode,
+        messages: msgs,
+      );
     } on BackendApiException catch (e) {
       if (e.message.contains('404') || e.message.contains('not_found')) {
         return null;
@@ -404,15 +514,7 @@ class BackendApi {
       experiences: List<String>.from(
         (j['experiences'] as List?) ?? fallback.experiences,
       ),
-      educationItems: ((j['educationItems'] as List?) ?? const [])
-          .map((e) {
-            if (e is Map) {
-              return EducationEntry.fromJson(Map<String, dynamic>.from(e));
-            }
-            return EducationEntry.parseFromLine(e?.toString() ?? '');
-          })
-          .where((e) => !e.isEmpty)
-          .toList(),
+      educationItems: EducationEntry.parseListJson(j['educationItems']),
       concerns: (j['concerns'] as String?) ?? fallback.concerns,
       startupInterest:
           (j['startupInterest'] as bool?) ?? fallback.startupInterest,
