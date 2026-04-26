@@ -22,7 +22,7 @@ class DailyQuestionCard extends StatelessWidget {
       padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
         color: CupertinoColors.white.withValues(alpha: 0.92),
-        borderRadius: BorderRadius.circular(28),
+        borderRadius: BorderRadius.circular(10),
         border: Border.all(color: const Color(0x1A000000)),
         boxShadow: const [
           BoxShadow(
@@ -59,7 +59,10 @@ class DailyQuestionCard extends StatelessWidget {
                 ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
                   color: CupertinoColors.white,
                   borderRadius: BorderRadius.circular(14),
@@ -84,7 +87,10 @@ class DailyQuestionCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('題目', style: TextStyle(fontSize: 13, color: Color(0xFF52525B))),
+                const Text(
+                  '題目',
+                  style: TextStyle(fontSize: 13, color: Color(0xFF52525B)),
+                ),
                 const SizedBox(height: 8),
                 Text(
                   question.text,
@@ -108,8 +114,10 @@ class DailyQuestionCard extends StatelessWidget {
                       Expanded(
                         child: _OptionButton(
                           label: question.options[i],
-                          selected: done && answered!.answer == question.options[i],
-                          dimmed: done && answered!.answer != question.options[i],
+                          selected:
+                              done && answered!.answer == question.options[i],
+                          dimmed:
+                              done && answered!.answer != question.options[i],
                           enabled: !done,
                           onPressed: () => onAnswer(question.options[i]),
                         ),
@@ -119,8 +127,12 @@ class DailyQuestionCard extends StatelessWidget {
                         Expanded(
                           child: _OptionButton(
                             label: question.options[i + 1],
-                            selected: done && answered!.answer == question.options[i + 1],
-                            dimmed: done && answered!.answer != question.options[i + 1],
+                            selected:
+                                done &&
+                                answered!.answer == question.options[i + 1],
+                            dimmed:
+                                done &&
+                                answered!.answer != question.options[i + 1],
                             enabled: !done,
                             onPressed: () => onAnswer(question.options[i + 1]),
                           ),
@@ -135,12 +147,19 @@ class DailyQuestionCard extends StatelessWidget {
             const SizedBox(height: 16),
             Text.rich(
               TextSpan(
-                style: const TextStyle(fontSize: 14, height: 1.45, color: Color(0xFF3F3F46)),
+                style: const TextStyle(
+                  fontSize: 14,
+                  height: 1.45,
+                  color: Color(0xFF3F3F46),
+                ),
                 children: [
                   const TextSpan(text: '你今天的答案是：'),
                   TextSpan(
                     text: answered!.answer,
-                    style: const TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF18181B)),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF18181B),
+                    ),
                   ),
                 ],
               ),
@@ -158,7 +177,10 @@ class DailyQuestionCard extends StatelessWidget {
                     borderRadius: BorderRadius.circular(14),
                     border: Border.all(color: const Color(0x1A000000)),
                   ),
-                  child: const Text('A', style: TextStyle(fontWeight: FontWeight.w600)),
+                  child: const Text(
+                    'A',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -171,7 +193,11 @@ class DailyQuestionCard extends StatelessWidget {
                     ),
                     child: Text(
                       question.answer,
-                      style: const TextStyle(fontSize: 14, height: 1.55, color: Color(0xFF18181B)),
+                      style: const TextStyle(
+                        fontSize: 14,
+                        height: 1.55,
+                        color: Color(0xFF18181B),
+                      ),
                     ),
                   ),
                 ),
@@ -224,7 +250,9 @@ class _OptionButton extends StatelessWidget {
           style: TextStyle(
             fontSize: 14,
             fontWeight: FontWeight.w600,
-            color: dimmed ? const Color(0xFF52525B) : (selected ? CupertinoColors.white : CupertinoColors.black),
+            color: dimmed
+                ? const Color(0xFF52525B)
+                : (selected ? CupertinoColors.white : CupertinoColors.black),
           ),
         ),
       ),
