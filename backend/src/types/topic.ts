@@ -13,6 +13,15 @@ export type StoredTopic = {
   resolvedAt: string | null;
   kbSourceId: string | null;
   questionCount: number;
+  /**
+   * 這個主題裡還沒被諮詢師回覆的成員問題數。
+   *   - 由 backend 即時算出來：normalized_questions 屬於這 topic 但
+   *     沒有任一筆 chat_messages.by_counselor=true 的 normalized.reply_to_message_id
+   *     等於該 question 的 message_id。
+   *   - 主題卡上會顯示成「N 未回」徽章，諮詢師可以一眼掃哪些主題還有沒處理的題。
+   *   - 可能 undefined（後端 supabase 沒設定時）。
+   */
+  unansweredCount?: number;
   createdAt: string;
   updatedAt: string;
 };

@@ -9,7 +9,8 @@
       "Bash(flutter build *)",
       "Bash(pkill -f \"next dev\")",
       "Bash(grep -n \"child: Text\\(\\\\s*$\\\\|child: Text\\(\\\\s*\\\\n\\\\s*message.text\" lib/screens/chat_screen.dart)",
-      "Bash(grep -n \"fetchTopicWithMembers\\\\|return { ...topic, members\" backend/src/lib/db.ts)"
+      "Bash(grep -n \"fetchTopicWithMembers\\\\|return { ...topic, members\" backend/src/lib/db.ts)",
+      "Bash(grep -n \"return { ...topic, members, counselorReplies };\" backend/src/lib/db.ts)"
     ]
   }
 }
