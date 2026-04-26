@@ -456,15 +456,51 @@ function refreshNormalizedQuestionInBackground(opts: {
         persona: opts.persona,
         history: opts.history,
       });
-      if (!outcome.stored) return;
-      await db.insertNormalizedQuestion(
+      if (!outcome.stored) {
+        console.info(
+          `[normalizeQuestion] skipped (reason=${outcome.reason}) for msg=${opts.messageId}`,
+        );
+        return;
+      }
+      const stored = await db.insertNormalizedQuestion(
         opts.userId,
         opts.conversationId,
         opts.messageId,
         outcome.draft,
       );
+      if (!stored) {
+        console.warn(
+          `[normalizeQuestion] insertNormalizedQuestion returned null — Supabase 沒寫入 (檢查 SUPABASE_SERVICE_ROLE_KEY 與 RLS)。msg=${opts.messageId}`,
+        );
+        return;
+      }
       if (outcome.draft.tags?.length) {
         await db.appendUserTags(opts.userId, outcome.draft.tags);
+      }
+      // —— 把這題分配到 Topic（諮詢師端走 topic 列表才看得到） ——
+      // 若已經被標 resolved（AI 高信心 / KB 命中）就不用再開 topic，
+      // 避免諮詢師收件匣被一堆 AI 已處理的卡刷洗。
+      if (outcome.draft.resolved) {
+        return;
+      }
+      try {
+        const { clusterQuestionIntoTopic } = await import(
+          "@/engines/topicCluster"
+        );
+        const cluster = await clusterQuestionIntoTopic({
+          userId: opts.userId,
+          normalizedQuestionId: stored.id,
+          rawQuestion: opts.question,
+          normalizedText:
+            outcome.draft.normalizedText || opts.question,
+        });
+        if (!cluster) {
+          console.warn(
+            `[topicCluster] no topic assigned for nq=${stored.id} (createTopic 失敗?)`,
+          );
+        }
+      } catch (err) {
+        console.warn("[topicCluster] background failed:", err);
       }
     } catch (err) {
       console.warn("[normalizeQuestion] background pipeline failed:", err);

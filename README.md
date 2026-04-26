@@ -211,14 +211,19 @@ Gemini 根據檢索內容回答
 backend/src/data/knowledgeBase.ts
 ```
 
+
 ## 資料來源
 
-- YTP 2026 黑客松賽題 B：行善台北補充資料
-- 臺北市青年局政府公開網站資訊
-- 專案內整理的 mock policy / course / startup / FAQ knowledge base
-- 使用者互動資料：Profile、Swipe、Skill Translation、Chat、To-do 狀態
+[](https://github.com/ntuimytp/sigmaalpha67/tree/restore-chat-gemini-fallback#%E8%B3%87%E6%96%99%E4%BE%86%E6%BA%90)
+
+* YTP 2026 黑客松賽題 B：行善台北補充資料
+* 臺北市青年局政府公開網站資訊
+* 專案內整理的 mock policy / course / startup / FAQ knowledge base
+* 使用者互動資料：Profile、Swipe、Skill Translation、Chat、To-do 狀態
 
 ## Smoke Test
+
+[](https://github.com/ntuimytp/sigmaalpha67/tree/restore-chat-gemini-fallback#smoke-test)
 
 後端啟動後可用 PowerShell 測試：
 
@@ -263,6 +268,70 @@ Invoke-RestMethod `
 
 ## 目前限制
 
-- 目前 MVP 以 in-memory store 為主，Supabase 為 optional write-through。
-- RAG 現階段使用 seed knowledge base 與簡易語意檢索，後續可升級為 Supabase pgvector。
-- Dashboard 部分資料使用 mock fallback。
+[](https://github.com/ntuimytp/sigmaalpha67/tree/restore-chat-gemini-fallback#%E7%9B%AE%E5%89%8D%E9%99%90%E5%88%B6)
+
+* 目前 MVP 以 in-memory store 為主，Supabase 為 optional write-through。
+* RAG 現階段使用 seed knowledge base 與簡易語意檢索，後續可升級為 Supabase pgvector。
+* Dashboard 部分資料使用 mock fallback。
+
+## 資料來源
+
+[](https://github.com/ntuimytp/sigmaalpha67/tree/restore-chat-gemini-fallback#%E8%B3%87%E6%96%99%E4%BE%86%E6%BA%90)
+
+* YTP 2026 黑客松賽題 B：行善台北補充資料
+* 臺北市青年局政府公開網站資訊
+* 專案內整理的 mock policy / course / startup / FAQ knowledge base
+* 使用者互動資料：Profile、Swipe、Skill Translation、Chat、To-do 狀態
+
+## Smoke Test
+
+[](https://github.com/ntuimytp/sigmaalpha67/tree/restore-chat-gemini-fallback#smoke-test)
+
+後端啟動後可用 PowerShell 測試：
+
+```powershell
+Invoke-RestMethod http://localhost:3001/api/health
+```
+
+測試 RAG：
+
+```powershell
+$body = @{
+  question = "我想學資料分析，有沒有適合初學者的課程或補助？"
+  topK = 3
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://localhost:3001/api/rag/query `
+  -Headers @{ Authorization = "Bearer demo-user" } `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+測試 Chat：
+
+```powershell
+$body = @{
+  message = "我文組是不是不好找工作？"
+  context = @{
+    mode = "career"
+    useRag = $true
+  }
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://localhost:3001/api/chat/messages `
+  -Headers @{ Authorization = "Bearer demo-user" } `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+## 目前限制
+
+[](https://github.com/ntuimytp/sigmaalpha67/tree/restore-chat-gemini-fallback#%E7%9B%AE%E5%89%8D%E9%99%90%E5%88%B6)
+
+* 目前 MVP 以 in-memory store 為主，Supabase 為 optional write-through。
+* RAG 現階段使用 seed knowledge base 與簡易語意檢索，後續可升級為 Supabase pgvector。
+* Dashboard 部分資料使用 mock fallback。
