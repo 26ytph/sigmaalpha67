@@ -711,6 +711,225 @@ class NormalizedQuestion {
       };
 }
 
+/// 單一可勾選任務。具備 stable [id] 是核心：當 AI 重新生成計畫時，
+/// 舊任務若還在新版內，仍能 keep 住勾選狀態（透過 id 比對；若 id 換了
+/// 也可以 fall back 用 title 比對）。
+class PlanTask {
+  const PlanTask({
+    required this.id,
+    required this.title,
+    this.description = '',
+    this.section = 'goals',
+    this.done = false,
+    this.userAdded = false,
+    this.userEdited = false,
+  });
+
+  final String id;
+  final String title;
+  final String description;
+
+  /// 'goals' / 'resources' / 'outputs' — 沿用原 PlanWeek 的三段分類
+  final String section;
+  final bool done;
+  final bool userAdded;
+  final bool userEdited;
+
+  PlanTask copyWith({
+    String? id,
+    String? title,
+    String? description,
+    String? section,
+    bool? done,
+    bool? userAdded,
+    bool? userEdited,
+  }) {
+    return PlanTask(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      description: description ?? this.description,
+      section: section ?? this.section,
+      done: done ?? this.done,
+      userAdded: userAdded ?? this.userAdded,
+      userEdited: userEdited ?? this.userEdited,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'description': description,
+        'section': section,
+        'done': done,
+        'userAdded': userAdded,
+        'userEdited': userEdited,
+      };
+
+  static PlanTask fromJson(Map<String, dynamic> j) => PlanTask(
+        id: (j['id'] as String?) ?? '',
+        title: (j['title'] as String?) ?? '',
+        description: (j['description'] as String?) ?? '',
+        section: (j['section'] as String?) ?? 'goals',
+        done: j['done'] == true,
+        userAdded: j['userAdded'] == true,
+        userEdited: j['userEdited'] == true,
+      );
+}
+
+class CustomPlanWeek {
+  const CustomPlanWeek({
+    required this.week,
+    required this.title,
+    required this.tasks,
+  });
+
+  final int week;
+  final String title;
+  final List<PlanTask> tasks;
+
+  CustomPlanWeek copyWith({int? week, String? title, List<PlanTask>? tasks}) {
+    return CustomPlanWeek(
+      week: week ?? this.week,
+      title: title ?? this.title,
+      tasks: tasks ?? this.tasks,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'week': week,
+        'title': title,
+        'tasks': tasks.map((t) => t.toJson()).toList(),
+      };
+
+  static CustomPlanWeek fromJson(Map<String, dynamic> j) => CustomPlanWeek(
+        week: (j['week'] as num?)?.toInt() ?? 0,
+        title: (j['title'] as String?) ?? '',
+        tasks: ((j['tasks'] as List?) ?? const [])
+            .whereType<Map>()
+            .map((m) => PlanTask.fromJson(Map<String, dynamic>.from(m)))
+            .toList(),
+      );
+}
+
+/// 使用者「自己的計畫」：每個 task 有 stable id，使用者可以編輯／刪除／
+/// 新增；也可以透過自然語言 prompt 再丟給 AI 增量更新（保留勾選狀態）。
+class CustomPlan {
+  const CustomPlan({
+    required this.headline,
+    required this.weeks,
+    this.goalPrompt = '',
+    this.lastUpdated,
+    this.fromAi = false,
+  });
+
+  final String headline;
+  final List<CustomPlanWeek> weeks;
+
+  /// 使用者最近一次的自然語言目標（例：「我想投 DevOps 實習」）。
+  final String goalPrompt;
+  final String? lastUpdated;
+
+  /// 是否為 AI 客製（true）vs 純本機模板（false）。
+  final bool fromAi;
+
+  bool get isEmpty => weeks.isEmpty;
+
+  CustomPlan copyWith({
+    String? headline,
+    List<CustomPlanWeek>? weeks,
+    String? goalPrompt,
+    String? lastUpdated,
+    bool? fromAi,
+  }) {
+    return CustomPlan(
+      headline: headline ?? this.headline,
+      weeks: weeks ?? this.weeks,
+      goalPrompt: goalPrompt ?? this.goalPrompt,
+      lastUpdated: lastUpdated ?? this.lastUpdated,
+      fromAi: fromAi ?? this.fromAi,
+    );
+  }
+
+  static CustomPlan empty() =>
+      const CustomPlan(headline: '', weeks: [], goalPrompt: '');
+
+  Map<String, dynamic> toJson() => {
+        'headline': headline,
+        'weeks': weeks.map((w) => w.toJson()).toList(),
+        'goalPrompt': goalPrompt,
+        'lastUpdated': lastUpdated,
+        'fromAi': fromAi,
+      };
+
+  static CustomPlan fromJson(Map<String, dynamic> j) => CustomPlan(
+        headline: (j['headline'] as String?) ?? '',
+        weeks: ((j['weeks'] as List?) ?? const [])
+            .whereType<Map>()
+            .map((m) => CustomPlanWeek.fromJson(Map<String, dynamic>.from(m)))
+            .toList(),
+        goalPrompt: (j['goalPrompt'] as String?) ?? '',
+        lastUpdated: j['lastUpdated'] as String?,
+        fromAi: j['fromAi'] == true,
+      );
+}
+
+/// 上次「同步」按下去之後，記錄當時資料的指紋。後續再次按同步時用來算
+/// delta（新滑了哪些卡 / profile 動過了沒 / 技能翻譯有沒有新增），如果
+/// 全部都沒變就顯示「無資料」，避免 AI 白白被打。
+class SyncSnapshot {
+  const SyncSnapshot({
+    this.syncedAt,
+    this.likedRoleIds = const <RoleId>[],
+    this.profileSig = '',
+    this.personaSig = '',
+    this.translationCount = 0,
+  });
+
+  final String? syncedAt;
+  final List<RoleId> likedRoleIds;
+  final String profileSig;
+  final String personaSig;
+  final int translationCount;
+
+  bool get isEmpty => syncedAt == null;
+
+  SyncSnapshot copyWith({
+    String? syncedAt,
+    List<RoleId>? likedRoleIds,
+    String? profileSig,
+    String? personaSig,
+    int? translationCount,
+  }) {
+    return SyncSnapshot(
+      syncedAt: syncedAt ?? this.syncedAt,
+      likedRoleIds: likedRoleIds ?? this.likedRoleIds,
+      profileSig: profileSig ?? this.profileSig,
+      personaSig: personaSig ?? this.personaSig,
+      translationCount: translationCount ?? this.translationCount,
+    );
+  }
+
+  static SyncSnapshot empty() => const SyncSnapshot();
+
+  Map<String, dynamic> toJson() => {
+        'syncedAt': syncedAt,
+        'likedRoleIds': likedRoleIds,
+        'profileSig': profileSig,
+        'personaSig': personaSig,
+        'translationCount': translationCount,
+      };
+
+  static SyncSnapshot fromJson(Map<String, dynamic> j) => SyncSnapshot(
+        syncedAt: j['syncedAt'] as String?,
+        likedRoleIds: List<String>.from(
+          (j['likedRoleIds'] as List?) ?? const [],
+        ),
+        profileSig: (j['profileSig'] as String?) ?? '',
+        personaSig: (j['personaSig'] as String?) ?? '',
+        translationCount: (j['translationCount'] as num?)?.toInt() ?? 0,
+      );
+}
+
 class AppStorage {
   const AppStorage({
     required this.account,
@@ -722,6 +941,8 @@ class AppStorage {
     required this.planWeekNotes,
     required this.strike,
     required this.skillTranslations,
+    required this.customPlan,
+    required this.lastSync,
   });
 
   final UserAccount account;
@@ -733,6 +954,8 @@ class AppStorage {
   final Map<String, String> planWeekNotes;
   final StrikeState strike;
   final List<SkillTranslation> skillTranslations;
+  final CustomPlan customPlan;
+  final SyncSnapshot lastSync;
 
   bool get isAuthenticated => account.isAuthenticated;
   bool get isOnboarded => !profile.isEmpty;
@@ -748,6 +971,8 @@ class AppStorage {
       planWeekNotes: {},
       strike: const StrikeState(current: 0),
       skillTranslations: const [],
+      customPlan: CustomPlan.empty(),
+      lastSync: SyncSnapshot.empty(),
     );
   }
 
@@ -761,6 +986,8 @@ class AppStorage {
     Map<String, String>? planWeekNotes,
     StrikeState? strike,
     List<SkillTranslation>? skillTranslations,
+    CustomPlan? customPlan,
+    SyncSnapshot? lastSync,
   }) {
     return AppStorage(
       account: account ?? this.account,
@@ -772,6 +999,8 @@ class AppStorage {
       planWeekNotes: planWeekNotes ?? this.planWeekNotes,
       strike: strike ?? this.strike,
       skillTranslations: skillTranslations ?? this.skillTranslations,
+      customPlan: customPlan ?? this.customPlan,
+      lastSync: lastSync ?? this.lastSync,
     );
   }
 
@@ -798,6 +1027,8 @@ class AppStorage {
       },
       'skillTranslations':
           skillTranslations.map((s) => s.toJson()).toList(growable: false),
+      'customPlan': customPlan.toJson(),
+      'lastSync': lastSync.toJson(),
     };
   }
 
@@ -887,6 +1118,16 @@ class AppStorage {
       }
     }
 
+    final customPlanRaw = json['customPlan'];
+    final customPlan = customPlanRaw is Map
+        ? CustomPlan.fromJson(Map<String, dynamic>.from(customPlanRaw))
+        : CustomPlan.empty();
+
+    final lastSyncRaw = json['lastSync'];
+    final lastSync = lastSyncRaw is Map
+        ? SyncSnapshot.fromJson(Map<String, dynamic>.from(lastSyncRaw))
+        : SyncSnapshot.empty();
+
     return AppStorage(
       account: account,
       profile: profile,
@@ -898,6 +1139,8 @@ class AppStorage {
       strike: StrikeState(
           current: current, lastAnsweredDate: lastAnsweredDate),
       skillTranslations: skillTranslations,
+      customPlan: customPlan,
+      lastSync: lastSync,
     );
   }
 }

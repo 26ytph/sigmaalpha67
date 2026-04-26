@@ -2,12 +2,12 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../logic/counselor_brief.dart';
 import '../logic/intent_normalizer.dart';
 import '../models/models.dart';
 import '../services/app_repository.dart';
@@ -24,6 +24,7 @@ class ChatMessage {
     this.normalized,
     this.askedHandoff = false,
     this.byCounselor = false,
+    this.replyToText,
     this.sources = const [],
   });
 
@@ -35,8 +36,11 @@ class ChatMessage {
   final DateTime time;
   final NormalizedQuestion? normalized;
   final bool askedHandoff;
-  /// 這則訊息是真人諮詢師發的（透過 case reply）。Bubble 會多一個「諮詢師」徽章。
+  /// 這則訊息是真人諮詢師發的（透過 case / topic reply）。Bubble 會多一個「諮詢師」徽章。
   final bool byCounselor;
+  /// 諮詢師回覆專用：對應 user 哪一則問題的文字快照。Bubble 上方會顯示 ↩ 引用框，
+  /// 避免被別題擠下去之後 user 看不懂這則回覆是給哪題。
+  final String? replyToText;
   final List<RagSource> sources;
 }
 
@@ -130,6 +134,7 @@ class _ChatScreenState extends State<ChatScreen> {
       fromUser: m.fromUser,
       time: created,
       byCounselor: m.byCounselor,
+      replyToText: m.replyToText,
     );
   }
 
@@ -183,6 +188,13 @@ class _ChatScreenState extends State<ChatScreen> {
     final byCounselor = row['by_counselor'] == true;
     final created = DateTime.tryParse(row['created_at']?.toString() ?? '') ??
         DateTime.now();
+    // 諮詢師回覆 — 從 normalized JSONB 撈 reply_to_text，bubble 上方掛 ↩ 引用框。
+    String? replyToText;
+    final normalized = row['normalized'];
+    if (normalized is Map) {
+      final raw = normalized['reply_to_text'];
+      if (raw is String && raw.isNotEmpty) replyToText = raw;
+    }
 
     // 嘗試把這個 id 綁到本機剛剛 optimistic 加上去的訊息上（避免 user 自己送的訊息被 dup）。
     // 諮詢師訊息一定是 server-only — 不會有對應的 optimistic bubble，所以跳過 claim 直接 append。
@@ -209,6 +221,7 @@ class _ChatScreenState extends State<ChatScreen> {
           fromUser: fromUser,
           time: created,
           byCounselor: byCounselor,
+          replyToText: replyToText,
         ),
       );
     });
@@ -258,10 +271,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   ChatMessage _greeting() {
-    final name = widget.storage.profile.name;
-    final greet = name.isNotEmpty
-        ? '嗨 $name！我是 EmploYA 小幫手。想聊職涯方向、面試、創業或心情都可以。'
-        : '嗨，我是 EmploYA 小幫手。想聊聊職涯方向、面試準備、或計畫怎麼推進都可以！';
+    const greet =
+        '我是 YAYA，你的職涯好夥伴！\n想聊什麼嗎？職涯方向、面試問題或心情都可以。';
     return ChatMessage(text: greet, fromUser: false, time: DateTime.now());
   }
 
@@ -424,23 +435,6 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  void _showCounselorBrief(ChatMessage userMsg) {
-    final n = userMsg.normalized;
-    if (n == null) return;
-    final brief = CounselorBriefEngine.build(
-      profile: widget.storage.profile,
-      persona: widget.storage.persona,
-      explore: widget.storage.explore,
-      normalized: n,
-      originalQuestion: userMsg.text,
-    );
-
-    showCupertinoModalPopup<void>(
-      context: context,
-      builder: (ctx) => _CounselorBriefSheet(brief: brief),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return CupertinoPageScaffold(
@@ -478,19 +472,6 @@ class _ChatScreenState extends State<ChatScreen> {
                     return const _TypingBubble();
                   }
                   final m = _messages[index];
-                  if (!m.fromUser && m.askedHandoff) {
-                    final prevUser = _findPrevUser(index);
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        _MessageBubble(message: m),
-                        if (prevUser != null)
-                          _HandoffPrompt(
-                            onTap: () => _showCounselorBrief(prevUser),
-                          ),
-                      ],
-                    );
-                  }
                   return _MessageBubble(message: m);
                 },
               ),
@@ -504,13 +485,6 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       ),
     );
-  }
-
-  ChatMessage? _findPrevUser(int idx) {
-    for (var i = idx - 1; i >= 0; i--) {
-      if (_messages[i].fromUser) return _messages[i];
-    }
-    return null;
   }
 }
 
@@ -561,6 +535,11 @@ class _MessageBubble extends StatelessWidget {
               if (byCounselor) ...[
                 const _CounselorBadge(),
                 const SizedBox(height: 4),
+                if (message.replyToText != null &&
+                    message.replyToText!.isNotEmpty) ...[
+                  _ReplyToQuote(text: message.replyToText!),
+                  const SizedBox(height: 4),
+                ],
               ],
               Container(
                 padding: const EdgeInsets.symmetric(
@@ -568,8 +547,15 @@ class _MessageBubble extends StatelessWidget {
                   vertical: 10,
                 ),
                 decoration: decoration,
-                child: Text(
-                  message.text,
+                child: Text.rich(
+                  TextSpan(
+                    children: _renderMarkdownLinks(
+                      message.text,
+                      baseColor: fromUser
+                          ? CupertinoColors.white
+                          : AppColors.textPrimary,
+                    ),
+                  ),
                   style: TextStyle(
                     fontSize: 15,
                     height: 1.5,
@@ -588,6 +574,51 @@ class _MessageBubble extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// 把訊息裡的 markdown 連結 [文字](url) 拆成可點擊的 TextSpan。
+  /// AI 回覆會在提到 KB 資源時用這個格式內嵌實際的 sourceUrl —
+  /// 沒有的段落則沿用一般 Text。
+  static final RegExp _mdLinkRe = RegExp(r'\[([^\]]+)\]\((https?:[^)\s]+)\)');
+
+  List<InlineSpan> _renderMarkdownLinks(
+    String text, {
+    required Color baseColor,
+  }) {
+    final spans = <InlineSpan>[];
+    var cursor = 0;
+    for (final m in _mdLinkRe.allMatches(text)) {
+      if (m.start > cursor) {
+        spans.add(TextSpan(text: text.substring(cursor, m.start)));
+      }
+      final label = m.group(1) ?? '';
+      final url = m.group(2) ?? '';
+      spans.add(
+        TextSpan(
+          text: label,
+          style: TextStyle(
+            color: message.fromUser ? baseColor : AppColors.brandStart,
+            decoration: TextDecoration.underline,
+            decorationColor: message.fromUser
+                ? baseColor.withValues(alpha: 0.7)
+                : AppColors.brandStart,
+            fontWeight: FontWeight.w700,
+          ),
+          recognizer: TapGestureRecognizer()..onTap = () => _openUrl(url),
+        ),
+      );
+      cursor = m.end;
+    }
+    if (cursor < text.length) {
+      spans.add(TextSpan(text: text.substring(cursor)));
+    }
+    return spans;
+  }
+
+  Future<void> _openUrl(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 }
 
@@ -621,6 +652,43 @@ class _CounselorBadge extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 諮詢師回覆專用：顯示這則訊息對應的 user 問題（被別題擠下去也看得到）。
+class _ReplyToQuote extends StatelessWidget {
+  const _ReplyToQuote({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.of(context).size.width * 0.78,
+      ),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: AppColors.bgAlt,
+          border: const Border(
+            left: BorderSide(color: AppColors.brandStart, width: 3),
+          ),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          '↩ 回覆：$text',
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            fontSize: 11.5,
+            height: 1.4,
+            fontWeight: FontWeight.w600,
+            color: AppColors.textSecondary,
+          ),
+        ),
       ),
     );
   }
@@ -707,244 +775,6 @@ class _SourceChip extends StatelessWidget {
             ],
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _HandoffPrompt extends StatelessWidget {
-  const _HandoffPrompt({required this.onTap});
-
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: CupertinoButton(
-          padding: EdgeInsets.zero,
-          minimumSize: Size.zero,
-          onPressed: onTap,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-            decoration: BoxDecoration(
-              gradient: AppColors.softGradient,
-              borderRadius: BorderRadius.circular(AppRadii.pill),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  CupertinoIcons.person_2_fill,
-                  size: 14,
-                  color: AppColors.brandStart,
-                ),
-                AppGaps.w6,
-                Text(
-                  '需要真人諮詢師？產生交接單',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.brandStart,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _CounselorBriefSheet extends StatelessWidget {
-  const _CounselorBriefSheet({required this.brief});
-
-  final CounselorBrief brief;
-
-  @override
-  Widget build(BuildContext context) {
-    return DraggableScrollableSheet(
-      expand: false,
-      initialChildSize: 0.92,
-      minChildSize: 0.5,
-      maxChildSize: 0.96,
-      builder: (context, scroll) {
-        return Container(
-          decoration: const BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
-          ),
-          child: Column(
-            children: [
-              const SizedBox(height: 10),
-              Container(
-                width: 44,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFD4D4D8),
-                  borderRadius: BorderRadius.circular(AppRadii.pill),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        gradient: AppColors.brandGradient,
-                        borderRadius: BorderRadius.circular(AppRadii.pill),
-                      ),
-                      child: const Text(
-                        '諮詢師交接單',
-                        style: TextStyle(
-                          color: CupertinoColors.white,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      '迫切度：${brief.urgency}',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textTertiary,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Expanded(
-                child: ListView(
-                  controller: scroll,
-                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-                  children: [
-                    const Text(
-                      '快速接手對話',
-                      style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: -0.3,
-                      ),
-                    ),
-                    AppGaps.h12,
-                    _briefSection('使用者背景', brief.userBackground),
-                    _briefSection('Persona 摘要', brief.personaSummary),
-                    _briefSection('近期互動', brief.recentActivities),
-                    _briefSection('原始問題', brief.mainQuestion),
-                    _briefSection('AI 分析', brief.aiAnalysis),
-                    _briefList('建議談話方向', brief.suggestedTopics),
-                    _briefList('推薦資源', brief.recommendedResources),
-                    AppGaps.h8,
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: AppColors.bgAlt,
-                        borderRadius: BorderRadius.circular(AppRadii.md),
-                        border: Border.all(color: AppColors.border),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'AI 回稿（諮詢師可修改後送出）',
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                              letterSpacing: 0.4,
-                              color: AppColors.brandStart,
-                            ),
-                          ),
-                          AppGaps.h8,
-                          Text(
-                            brief.aiDraftReply,
-                            style: const TextStyle(
-                              fontSize: 14,
-                              height: 1.6,
-                              color: AppColors.textPrimary,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _briefSection(String title, String body) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            title,
-            style: const TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.4,
-              color: AppColors.textTertiary,
-            ),
-          ),
-          AppGaps.h6,
-          Text(
-            body,
-            style: const TextStyle(
-              fontSize: 14,
-              height: 1.55,
-              color: AppColors.textPrimary,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _briefList(String title, List<String> items) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            title,
-            style: const TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.4,
-              color: AppColors.textTertiary,
-            ),
-          ),
-          AppGaps.h6,
-          for (final s in items)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: Text(
-                '・$s',
-                style: const TextStyle(
-                  fontSize: 14,
-                  height: 1.5,
-                  color: AppColors.textPrimary,
-                ),
-              ),
-            ),
-        ],
       ),
     );
   }

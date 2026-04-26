@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../logic/generate_plan.dart';
 import '../logic/persona_engine.dart';
 import '../logic/skill_translator.dart';
 import '../models/models.dart';
@@ -163,6 +164,274 @@ class AppRepository {
     }
   }
 
+  /// 從後端拉一份 LLM 客製化的 4 週計畫（`POST /api/plan/generate`）。
+  ///
+  /// 流程：
+  ///   1. 先呼叫後端（後端會 try Gemini，失敗自動 fallback 到 template）。
+  ///   2. 若整個 endpoint 都不通（離線、401），fallback 到本機
+  ///      [generatePlan] — 同樣的 template，但跑在裝置上。
+  ///
+  /// 回傳的 [GeneratedPlan] 一定可用。`fromBackend` 表示這份是否真的
+  /// 來自後端（用來在 UI 上區分「AI 客製」vs「本機模板」）。
+  static Future<({GeneratedPlan plan, bool fromBackend})> fetchPlan(
+    AppStorage storage,
+  ) async {
+    final remote = await BackendApi.generatePlan(
+      mode: storage.profile.mode,
+      likedRoleIds: storage.explore.likedRoleIds,
+      persona: storage.persona.isEmpty ? null : storage.persona,
+    );
+
+    // 本機 plan：負責 basedOnTopTags / recommendedRoles / courses 這些
+    // deterministic 的部分；如果後端 OK，再用後端的 headline + weeks
+    // 蓋掉。
+    final localPlan = generatePlan(
+      storage.explore.likedRoleIds,
+      mode: storage.profile.mode,
+    );
+
+    if (remote == null) {
+      return (plan: localPlan, fromBackend: false);
+    }
+
+    final weeks = remote.weeks
+        .map(
+          (w) => PlanWeek(
+            week: w.week,
+            title: w.title,
+            goals: w.goals,
+            resources: w.resources,
+            outputs: w.outputs,
+          ),
+        )
+        .toList();
+
+    return (
+      plan: GeneratedPlan(
+        basedOnLikedRoleIds: localPlan.basedOnLikedRoleIds,
+        basedOnTopTags: localPlan.basedOnTopTags,
+        recommendedRoles: localPlan.recommendedRoles,
+        headline: remote.headline,
+        weeks: weeks,
+        courses: localPlan.courses,
+      ),
+      fromBackend: true,
+    );
+  }
+
+  /// 一次重新整理職涯路徑頁需要的三份資料：profile / persona / 技能翻譯。
+  ///
+  /// 任何一段網路失敗都不影響其他段；對應的 `*Changed` 欄位回 `null`
+  /// 代表那段沒拿到資料（例如離線、token 過期）。回傳的 [storage]
+  /// 一定可用，最差就是維持本機現況。
+  static Future<({
+    AppStorage storage,
+    bool? profileChanged,
+    bool? personaChanged,
+    int? exploreChanged,
+    int? translationsChanged,
+  })> refreshAll() async {
+    final pre = await load();
+    bool? profileChanged;
+    bool? personaChanged;
+    int? exploreChanged;
+    int? translationsChanged;
+
+    // 1) Profile
+    try {
+      final remote = await BackendApi.fetchProfile();
+      if (remote != null && !remote.isEmpty) {
+        profileChanged = !_profileEquals(pre.profile, remote);
+        await save((await load()).copyWith(profile: remote));
+      } else {
+        profileChanged = false;
+      }
+    } catch (_) {
+      profileChanged = null;
+    }
+
+    // 2) Persona
+    try {
+      final remote = await BackendApi.fetchPersona();
+      if (remote != null && !remote.isEmpty) {
+        final cur = await load();
+        personaChanged = !_personaEquals(cur.persona, remote);
+        await save(cur.copyWith(persona: remote));
+      } else {
+        personaChanged = false;
+      }
+    } catch (_) {
+      personaChanged = null;
+    }
+
+    // 3) Swipe summary — likedRoleIds is the strongest signal for the
+    //    roadmap because generatePlan() takes it as input.
+    try {
+      final remote = await BackendApi.fetchSwipeSummary();
+      final cur = await load();
+      final prevLiked = cur.explore.likedRoleIds;
+      final delta = _stringListDelta(prevLiked, remote.likedRoleIds);
+      exploreChanged = delta;
+      await save(
+        cur.copyWith(
+          explore: cur.explore.copyWith(
+            likedRoleIds: remote.likedRoleIds,
+            dislikedRoleIds: remote.dislikedRoleIds,
+          ),
+        ),
+      );
+    } catch (_) {
+      exploreChanged = null;
+    }
+
+    // 4) Skill translations
+    try {
+      final remote = await BackendApi.listSkillTranslations();
+      final cur = await load();
+      final prevById = {for (final t in cur.skillTranslations) t.id: t};
+      var changed = 0;
+      for (final t in remote) {
+        final old = prevById[t.id];
+        if (old == null || !_translationEquals(old, t)) changed++;
+      }
+      translationsChanged = changed;
+      await save(cur.copyWith(skillTranslations: remote));
+    } catch (_) {
+      translationsChanged = null;
+    }
+
+    final storage = await load();
+    return (
+      storage: storage,
+      profileChanged: profileChanged,
+      personaChanged: personaChanged,
+      exploreChanged: exploreChanged,
+      translationsChanged: translationsChanged,
+    );
+  }
+
+  // ===========================================================================
+  // 同步 delta：用來判斷「使用者按下同步後，到底有沒有新東西」。
+  // 沒有新東西時 UI 會顯示「無資料」，避免 AI 白被打。
+  // ===========================================================================
+
+  /// 從目前 storage 算出當下的「指紋」— 用來跟 [AppStorage.lastSync] 比對。
+  static SyncSnapshot snapshotOf(AppStorage s) {
+    // 後端 buildSwipeSummary 對「右滑同一張卡兩次」沒做去重，會回傳重複 id；
+    // 前端 explore 也只在當下 deck 內去重。這裡集中在進入比對前 dedupe 一次，
+    // 讓 sheet / delta / signature 都不會撞到重複職業。
+    final liked = <RoleId>{...s.explore.likedRoleIds}.toList()..sort();
+    final pSig = [
+      s.profile.name,
+      s.profile.currentStage,
+      s.profile.startupInterest ? '1' : '0',
+      ([...s.profile.goals]..sort()).join(','),
+      ([...s.profile.interests]..sort()).join(','),
+    ].join('|');
+    final personaSig = [
+      s.persona.text,
+      s.persona.recommendedNextStep,
+      ([...s.persona.mainInterests]..sort()).join(','),
+    ].join('|');
+    return SyncSnapshot(
+      syncedAt: s.lastSync.syncedAt,
+      likedRoleIds: liked,
+      profileSig: pSig,
+      personaSig: personaSig,
+      translationCount: s.skillTranslations.length,
+    );
+  }
+
+  /// 同步成功後把當下指紋寫進 storage，作為下一次比對的基準。
+  static Future<AppStorage> markSyncedNow(AppStorage s) async {
+    final snap = snapshotOf(s).copyWith(
+      syncedAt: DateTime.now().toIso8601String(),
+    );
+    return update((prev) => prev.copyWith(lastSync: snap));
+  }
+
+  /// 比對「上次同步時的指紋」vs「現在的 storage」，產出可餵給 UI 的 delta。
+  /// `newLikedRoleIds` = 自上次同步以來新增加的 ❤ 滑卡。
+  /// `allLikedRoleIds` = 目前所有 ❤ 滑卡（給多選 sheet 顯示）。
+  static ({
+    List<RoleId> newLikedRoleIds,
+    List<RoleId> allLikedRoleIds,
+    bool profileChanged,
+    bool personaChanged,
+    int newTranslationCount,
+    bool firstSync,
+  }) diffSync(AppStorage s) {
+    final cur = snapshotOf(s);
+    final last = s.lastSync;
+    final firstSync = last.isEmpty;
+
+    final lastLiked = last.likedRoleIds.toSet();
+    final newLiked = <RoleId>[];
+    for (final id in cur.likedRoleIds) {
+      if (firstSync || !lastLiked.contains(id)) newLiked.add(id);
+    }
+    return (
+      newLikedRoleIds: newLiked,
+      allLikedRoleIds: cur.likedRoleIds,
+      profileChanged: !firstSync && cur.profileSig != last.profileSig,
+      personaChanged: !firstSync && cur.personaSig != last.personaSig,
+      newTranslationCount: firstSync
+          ? cur.translationCount
+          : (cur.translationCount - last.translationCount).clamp(0, 1 << 30),
+      firstSync: firstSync,
+    );
+  }
+
+  /// 對稱差（不在意順序）— 回傳 a∆b 的元素數。
+  static int _stringListDelta(List<String> a, List<String> b) {
+    final sa = a.toSet();
+    final sb = b.toSet();
+    var n = 0;
+    for (final x in sa) {
+      if (!sb.contains(x)) n++;
+    }
+    for (final x in sb) {
+      if (!sa.contains(x)) n++;
+    }
+    return n;
+  }
+
+  static bool _profileEquals(UserProfile a, UserProfile b) {
+    if (a.name != b.name) return false;
+    if (a.currentStage != b.currentStage) return false;
+    if (a.startupInterest != b.startupInterest) return false;
+    if (!_listEq(a.goals, b.goals)) return false;
+    if (!_listEq(a.interests, b.interests)) return false;
+    return true;
+  }
+
+  static bool _personaEquals(Persona a, Persona b) {
+    if (a.text != b.text) return false;
+    if (a.recommendedNextStep != b.recommendedNextStep) return false;
+    if (!_listEq(a.mainInterests, b.mainInterests)) return false;
+    if (!_listEq(a.strengths, b.strengths)) return false;
+    return true;
+  }
+
+  static bool _translationEquals(SkillTranslation a, SkillTranslation b) {
+    if (a.id != b.id) return false;
+    if (a.rawExperience != b.rawExperience) return false;
+    if (a.groups.length != b.groups.length) return false;
+    for (var i = 0; i < a.groups.length; i++) {
+      if (a.groups[i].experience != b.groups[i].experience) return false;
+      if (!_listEq(a.groups[i].skills, b.groups[i].skills)) return false;
+    }
+    return true;
+  }
+
+  static bool _listEq(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
   static Future<AppStorage> saveSkillTranslation(
     SkillTranslation translation,
   ) async {
@@ -227,6 +496,147 @@ class AppRepository {
     try {
       await BackendApi.setTodo(key: key, done: done);
     } catch (_) {}
+  }
+
+  // ===========================================================================
+  // CustomPlan 維護：使用者可編輯 / 可勾選 / 可 prompt 更新的計畫主資料源。
+  // ===========================================================================
+
+  /// 把 deterministic 的 [GeneratedPlan]（4–8 週模板）轉成可編輯的
+  /// [CustomPlan]，每個任務指派 stable id。Seed 時用。
+  static CustomPlan customPlanFromGenerated(
+    GeneratedPlan src, {
+    required String goalPrompt,
+  }) {
+    final weeks = <CustomPlanWeek>[];
+    for (final w in src.weeks) {
+      final tasks = <PlanTask>[];
+      for (var i = 0; i < w.goals.length; i++) {
+        tasks.add(
+          PlanTask(
+            id: _stableTaskId('w${w.week}', 'goals', i, w.goals[i]),
+            title: w.goals[i],
+            section: 'goals',
+          ),
+        );
+      }
+      for (var i = 0; i < w.resources.length; i++) {
+        tasks.add(
+          PlanTask(
+            id: _stableTaskId('w${w.week}', 'resources', i, w.resources[i]),
+            title: w.resources[i],
+            section: 'resources',
+          ),
+        );
+      }
+      for (var i = 0; i < w.outputs.length; i++) {
+        tasks.add(
+          PlanTask(
+            id: _stableTaskId('w${w.week}', 'outputs', i, w.outputs[i]),
+            title: w.outputs[i],
+            section: 'outputs',
+          ),
+        );
+      }
+      weeks.add(CustomPlanWeek(week: w.week, title: w.title, tasks: tasks));
+    }
+    return CustomPlan(
+      headline: src.headline,
+      weeks: weeks,
+      goalPrompt: goalPrompt,
+      lastUpdated: DateTime.now().toIso8601String(),
+      fromAi: false,
+    );
+  }
+
+  static int _idCounter = 0;
+  static String _stableTaskId(
+    String weekKey,
+    String section,
+    int idx,
+    String seed,
+  ) {
+    _idCounter += 1;
+    final h = seed.hashCode.abs().toRadixString(36);
+    return 'tpl_${weekKey}_${section}_${idx}_${h}_$_idCounter';
+  }
+
+  /// 全部寫掉 customPlan（toggle / edit / delete / add 共用入口）。
+  static Future<AppStorage> updateCustomPlan(
+    CustomPlan Function(CustomPlan prev) updater,
+  ) async {
+    return update((prev) {
+      final next = updater(prev.customPlan);
+      return prev.copyWith(
+        customPlan: next.copyWith(
+          lastUpdated: DateTime.now().toIso8601String(),
+        ),
+      );
+    });
+  }
+
+  /// 直接覆寫整份 customPlan（AI refine 完用）。
+  static Future<AppStorage> setCustomPlan(CustomPlan plan) async {
+    return update(
+      (prev) => prev.copyWith(
+        customPlan: plan.copyWith(
+          lastUpdated: DateTime.now().toIso8601String(),
+        ),
+      ),
+    );
+  }
+
+  /// 用 [BackendApi.refinePlan] 跑一輪 AI 更新；done 狀態與 userAdded 任務
+  /// 在前端做 merge 以求穩定。回 null = 後端不通；`fromAi: false` 代表
+  /// 後端有回但 Gemini 沒生成（[message] 會帶人話錯誤）。
+  static Future<({CustomPlan plan, bool fromAi, String? message})?>
+      refinePlanWithAi({
+    required String prompt,
+    required AppStorage storage,
+  }) async {
+    final remote = await BackendApi.refinePlan(
+      prompt: prompt,
+      currentPlan: storage.customPlan,
+      mode: storage.profile.mode,
+      persona: storage.persona.isEmpty ? null : storage.persona,
+    );
+    if (remote == null) return null;
+
+    // Merge：把舊計畫中已勾選 done / 使用者新增的任務狀態套到新計畫。
+    final oldById = <String, PlanTask>{};
+    final oldByTitle = <String, PlanTask>{};
+    for (final w in storage.customPlan.weeks) {
+      for (final t in w.tasks) {
+        oldById[t.id] = t;
+        oldByTitle[t.title.trim().toLowerCase()] = t;
+      }
+    }
+    final mergedWeeks = <CustomPlanWeek>[];
+    for (final w in remote.plan.weeks) {
+      final mergedTasks = <PlanTask>[];
+      for (final t in w.tasks) {
+        final old = oldById[t.id] ??
+            oldByTitle[t.title.trim().toLowerCase()];
+        if (old != null) {
+          mergedTasks.add(
+            t.copyWith(
+              id: old.id, // keep stable id
+              done: old.done,
+              userAdded: old.userAdded,
+              userEdited: old.userEdited || t.title != old.title,
+            ),
+          );
+        } else {
+          mergedTasks.add(t);
+        }
+      }
+      mergedWeeks.add(
+        CustomPlanWeek(week: w.week, title: w.title, tasks: mergedTasks),
+      );
+    }
+    final merged = remote.plan.copyWith(weeks: mergedWeeks);
+    await setCustomPlan(merged);
+    return (plan: merged, fromAi: remote.fromAi, message: remote.message);
   }
 
   static Future<void> setWeekNote({

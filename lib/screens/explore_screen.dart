@@ -10,8 +10,6 @@ import '../utils/theme.dart';
 import '../widgets/explore_photo_card.dart';
 import '../widgets/swipe_card.dart';
 
-const _promptEvery = 10;
-
 class ExploreScreen extends StatefulWidget {
   const ExploreScreen({
     super.key,
@@ -35,10 +33,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
   // 我們可以偵測並重洗。
   late bool _deckIsStartup;
 
-  // 累積到下次 prompt 還差幾張（重啟 session 重置，避免 app 重開時被舊計數困住）
-  int _sinceLastPrompt = 0;
-  bool _promptOpen = false;
-
   bool get _isStartup => widget.storage.profile.startupInterest;
 
   List<CareerRole> _sourceDeck() => _isStartup ? startupSkills : roles;
@@ -58,7 +52,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
       setState(() {
         _deckIsStartup = _isStartup;
         _deckIdx = 0;
-        _sinceLastPrompt = 0;
         _deck = [..._sourceDeck()]..shuffle();
       });
     }
@@ -75,14 +68,25 @@ class _ExploreScreenState extends State<ExploreScreen> {
 
   void _swipe(SwipeDirection dir) {
     final role = _current;
-    // 反向：往左 = 有興趣 / 往右 = 沒興趣
-    final isLike = dir == SwipeDirection.left;
+    // Tinder convention：往右 = 有興趣 / 往左 = 沒興趣
+    final isLike = dir == SwipeDirection.right;
     unawaited(
       AppRepository.recordSwipe(
         cardId: role.id,
         liked: isLike,
       ),
     );
+
+    // 按 ❤ 時，把卡片 tag 的中文 label（'設計' / '工程' / ...）合併進
+    // profile.interests。只新增不刪除，避免使用者手動編輯過的清單被吃掉。
+    // 用「目前 widget.storage」算 diff —— 後面才不需要 await persist 結果。
+    final additions = isLike
+        ? role.tags
+            .map((t) => t.label)
+            .where((s) => s.isNotEmpty)
+            .toSet()
+            .difference(widget.storage.profile.interests.toSet())
+        : const <String>{};
 
     _persist((prev) {
       final liked = [...prev.explore.likedRoleIds];
@@ -96,7 +100,21 @@ class _ExploreScreenState extends State<ExploreScreen> {
         if (!disliked.contains(role.id)) disliked.add(role.id);
       }
 
+      // 對 prev.profile 套同一份 additions（用 set diff 再合併，雙重保險：
+      // 就算 prev 跟 widget.storage 間有微小漂移，也不會塞重複）。
+      var nextProfile = prev.profile;
+      if (additions.isNotEmpty) {
+        final existing = prev.profile.interests.toSet();
+        final realAdds = additions.difference(existing);
+        if (realAdds.isNotEmpty) {
+          nextProfile = prev.profile.copyWith(
+            interests: [...prev.profile.interests, ...realAdds],
+          );
+        }
+      }
+
       return prev.copyWith(
+        profile: nextProfile,
         explore: prev.explore.copyWith(
           likedRoleIds: liked,
           dislikedRoleIds: disliked,
@@ -105,50 +123,27 @@ class _ExploreScreenState extends State<ExploreScreen> {
       );
     });
 
+    // 真有新增 → 把整份 profile 推到後端（PUT /api/users/me/profile）。
+    // 不 await，UX 不被網路卡住；syncProfile 已經吞掉錯誤。
+    if (additions.isNotEmpty) {
+      final mergedInterests = [
+        ...widget.storage.profile.interests,
+        ...additions,
+      ];
+      final mergedProfile =
+          widget.storage.profile.copyWith(interests: mergedInterests);
+      unawaited(AppRepository.syncProfile(mergedProfile));
+    }
+
     setState(() {
       _deckIdx++;
-      _sinceLastPrompt++;
       // 卡組用完一輪重新洗牌，達成「無限滑卡」
       if (_deckIdx % _deck.length == 0) {
         _deck = [..._sourceDeck()]..shuffle();
       }
     });
-
-    if (_sinceLastPrompt >= _promptEvery && !_promptOpen) {
-      _askForUpdate();
-    }
-  }
-
-  Future<void> _askForUpdate() async {
-    _promptOpen = true;
-    final yes = await showCupertinoDialog<bool>(
-      context: context,
-      builder: (ctx) => CupertinoAlertDialog(
-        title: const Text('要更新興趣與計畫嗎？'),
-        content: Text(
-          '你已經滑了 $_sinceLastPrompt 張卡。要根據新的喜好重新整理 Persona 的興趣方向，'
-          '並讓「計畫」更貼近你最近的選擇嗎？',
-        ),
-        actions: [
-          CupertinoDialogAction(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('稍後再說'),
-          ),
-          CupertinoDialogAction(
-            isDefaultAction: true,
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('現在更新'),
-          ),
-        ],
-      ),
-    );
-    _promptOpen = false;
-    setState(() => _sinceLastPrompt = 0);
-
-    if (yes != true) return;
-    final next = await AppRepository.refreshPersonaFromBackend();
-    if (!mounted) return;
-    widget.onStorageChanged(next);
+    // 不再每 N 張自動跳 dialog；要更新計畫請走「職涯路徑」頁的同步按鈕，
+    // 那裡可以多選想餵給 AI 的滑卡。
   }
 
   Future<void> _resetExplore() async {
@@ -178,7 +173,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
     );
     setState(() {
       _deckIdx = 0;
-      _sinceLastPrompt = 0;
       _deck = [..._sourceDeck()]..shuffle();
     });
   }
@@ -187,7 +181,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
   Widget build(BuildContext context) {
     final likedCount = widget.storage.explore.likedRoleIds.length;
     final totalSwipes = widget.storage.explore.swipeCount;
-    final towardNext = _promptEvery - _sinceLastPrompt;
 
     return CupertinoPageScaffold(
       backgroundColor: AppColors.bg,
@@ -257,9 +250,9 @@ class _ExploreScreenState extends State<ExploreScreen> {
                             ],
                           ),
                           AppGaps.h2,
-                          Text(
-                            '再滑 $towardNext 張更新建議',
-                            style: const TextStyle(
+                          const Text(
+                            '到「職涯路徑」按同步即可選要套用的滑卡',
+                            style: TextStyle(
                               fontSize: 11,
                               color: AppColors.textTertiary,
                             ),
@@ -267,26 +260,6 @@ class _ExploreScreenState extends State<ExploreScreen> {
                         ],
                       ),
                     ],
-                  ),
-                  AppGaps.h12,
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(AppRadii.pill),
-                    child: SizedBox(
-                      height: 4,
-                      child: Stack(
-                        children: [
-                          const ColoredBox(color: AppColors.border),
-                          FractionallySizedBox(
-                            widthFactor: _sinceLastPrompt / _promptEvery,
-                            child: const DecoratedBox(
-                              decoration: BoxDecoration(
-                                gradient: AppColors.brandGradient,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
                   ),
                 ],
               ),
@@ -318,23 +291,23 @@ class _ExploreScreenState extends State<ExploreScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      // 左 = 有興趣（LIKE） — 往左滑也是同樣意思
-                      _RoundSwipeButton(
-                        label: 'LIKE',
-                        size: 80,
-                        gradient: AppColors.brandGradient,
-                        iconColor: CupertinoColors.white,
-                        icon: CupertinoIcons.heart_fill,
-                        onPressed: () => _swipe(SwipeDirection.left),
-                      ),
-                      const SizedBox(width: 36),
-                      // 右 = 沒興趣（PASS） — 往右滑同步
+                      // 左 = 沒興趣（PASS） — 往左滑同步
                       _RoundSwipeButton(
                         label: 'PASS',
                         size: 64,
                         bg: AppColors.surface,
                         iconColor: AppColors.iosRed,
                         icon: CupertinoIcons.xmark,
+                        onPressed: () => _swipe(SwipeDirection.left),
+                      ),
+                      const SizedBox(width: 36),
+                      // 右 = 有興趣（LIKE） — 往右滑同步
+                      _RoundSwipeButton(
+                        label: 'LIKE',
+                        size: 80,
+                        gradient: AppColors.brandGradient,
+                        iconColor: CupertinoColors.white,
+                        icon: CupertinoIcons.heart_fill,
                         onPressed: () => _swipe(SwipeDirection.right),
                       ),
                     ],

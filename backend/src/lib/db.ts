@@ -18,6 +18,7 @@
 
 import { getSupabaseAdmin } from "./supabase";
 import type { Profile } from "@/types/profile";
+import type { CounselorProfile } from "@/types/counselorProfile";
 import type { Persona } from "@/types/persona";
 import type { SwipeRecord } from "@/types/swipe";
 import type { SkillTranslation } from "@/types/skill";
@@ -27,6 +28,12 @@ import type {
   NormalizedQuestionDraft,
   StoredNormalizedQuestion,
 } from "@/types/normalizedQuestion";
+import type {
+  StoredTopic,
+  TopicCounselorReply,
+  TopicMemberQuestion,
+  TopicWithMembers,
+} from "@/types/topic";
 
 // ---------------------------------------------------------------------------
 // PROFILE
@@ -88,6 +95,75 @@ export async function fetchProfile(userId: string): Promise<Profile | null> {
     startupInterest: data.startup_interest === true,
     createdAt: data.created_at ?? "",
     updatedAt: data.updated_at ?? "",
+  };
+}
+
+/**
+ * 給諮詢師端用：列出所有有 profile 的使用者（id + 顯示名稱）。
+ * Supabase 沒設定就回空陣列，呼叫端會自動 fallback 到 in-memory。
+ */
+export async function listAllUsersForCounselor(
+  limit = 200,
+): Promise<Array<{ userId: string; name: string; email: string }>> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("user_id, name, email, updated_at")
+    .order("updated_at", { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.warn("[db] listAllUsersForCounselor failed:", error.message);
+    return [];
+  }
+  return (data ?? []).map((r: Record<string, unknown>) => ({
+    userId: (r.user_id as string) ?? "",
+    name: (((r.name as string) ?? "") + "").trim(),
+    email: (((r.email as string) ?? "") + "").trim(),
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// COUNSELOR PROFILE  (independent table; doesn't share `profiles`)
+// ---------------------------------------------------------------------------
+
+export async function upsertCounselorProfile(
+  userId: string,
+  p: CounselorProfile,
+) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return;
+  const row = {
+    user_id: userId,
+    name: p.name ?? "",
+    description: p.description ?? "",
+    expertise: p.expertise ?? [],
+    email: p.email ?? "",
+  };
+  const { error } = await supabase
+    .from("counselor_profiles")
+    .upsert(row, { onConflict: "user_id" });
+  if (error) console.warn("[db] upsertCounselorProfile failed:", error.message);
+}
+
+export async function fetchCounselorProfile(
+  userId: string,
+): Promise<CounselorProfile | null> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("counselor_profiles")
+    .select("*")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error || !data) return null;
+  return {
+    name: (data.name as string) ?? "",
+    description: (data.description as string) ?? "",
+    expertise: Array.isArray(data.expertise) ? (data.expertise as string[]) : [],
+    email: (data.email as string) ?? "",
+    createdAt: (data.created_at as string) ?? "",
+    updatedAt: (data.updated_at as string) ?? "",
   };
 }
 
@@ -299,6 +375,94 @@ export async function insertChatMessage(
   if (error) console.warn("[db] insertChatMessage failed:", error.message);
 }
 
+// ---------------------------------------------------------------------------
+// COUNSELOR FAQS  (持久化諮詢師回過的問答 → 重啟後 RAG 仍能命中)
+// ---------------------------------------------------------------------------
+
+export type StoredCounselorFaq = {
+  id: string;
+  question: string;
+  answer: string;
+  tags: string[];
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export async function upsertCounselorFaq(input: {
+  id: string;
+  question: string;
+  answer: string;
+  tags: string[];
+  createdBy: string | null;
+}): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return;
+  const { error } = await supabase.from("counselor_faqs").upsert(
+    {
+      id: input.id,
+      question: input.question,
+      answer: input.answer,
+      tags: input.tags,
+      created_by: input.createdBy,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "id" },
+  );
+  if (error) console.warn("[db] upsertCounselorFaq failed:", error.message);
+}
+
+export async function listCounselorFaqs(
+  limit = 200,
+): Promise<StoredCounselorFaq[]> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from("counselor_faqs")
+    .select("*")
+    .order("updated_at", { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.warn("[db] listCounselorFaqs failed:", error.message);
+    return [];
+  }
+  return (data ?? []).map((r: Record<string, unknown>) => ({
+    id: (r.id as string) ?? "",
+    question: (r.question as string) ?? "",
+    answer: (r.answer as string) ?? "",
+    tags: Array.isArray(r.tags) ? (r.tags as string[]) : [],
+    createdBy: (r.created_by as string | null) ?? null,
+    createdAt: (r.created_at as string) ?? "",
+    updatedAt: (r.updated_at as string) ?? "",
+  }));
+}
+
+/**
+ * 把某個使用者訊息對應的 normalized_questions row 標成已解決（諮詢師回完了）。
+ * 該 user msg 沒有 normalized row 時就 noop — 表示是 KB 直接命中那條，
+ * 之後同樣的問題以 KB 為準。
+ */
+export async function markNormalizedQuestionResolvedByMessageId(
+  userMsgId: string,
+  reason: string,
+): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return;
+  const { error } = await supabase
+    .from("normalized_questions")
+    .update({
+      resolved: true,
+      resolved_reason: reason,
+    })
+    .eq("message_id", userMsgId);
+  if (error) {
+    console.warn(
+      "[db] markNormalizedQuestionResolvedByMessageId failed:",
+      error.message,
+    );
+  }
+}
+
 /** 依 chat_messages.id 反查它所在的 conversation_id（限該 user 自己）。 */
 export async function findConversationIdByMessageId(
   userId: string,
@@ -314,6 +478,36 @@ export async function findConversationIdByMessageId(
     .maybeSingle();
   if (error) {
     console.warn("[db] findConversationIdByMessageId failed:", error.message);
+    return null;
+  }
+  return (data?.conversation_id as string | null) ?? null;
+}
+
+/**
+ * 找該 user「最近一次有訊息流動」的 conversation_id。
+ *
+ * 為什麼不直接拿 chat_conversations.created_at 最新一筆？
+ *   使用者切換創業／求職模式時可能會建一筆全新但空的 conversation，
+ *   那筆會比真正在聊的對話更新，諮詢師端拿到就會是空的。
+ *   所以這裡用 chat_messages 最新一筆所屬的 conversation_id，
+ *   才是「使用者實際在聊」的那段。
+ *
+ * 沒有任何 chat_messages → 回 null（呼叫端會 fallback 到 listConversations）。
+ */
+export async function findMostActiveConversationId(
+  userId: string,
+): Promise<string | null> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("chat_messages")
+    .select("conversation_id")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.warn("[db] findMostActiveConversationId failed:", error.message);
     return null;
   }
   return (data?.conversation_id as string | null) ?? null;
@@ -465,6 +659,249 @@ export async function appendUserTags(userId: string, newTags: string[]) {
 }
 
 // ---------------------------------------------------------------------------
+// QUESTION TOPICS  (相似 / 相同主題 + 未被 AI 解決的問題群組)
+// ---------------------------------------------------------------------------
+
+function rowToTopic(row: Record<string, unknown>): StoredTopic {
+  return {
+    id: (row.id as string) ?? "",
+    userId: (row.user_id as string) ?? "",
+    title: (row.title as string) ?? "",
+    summary: (row.summary as string) ?? "",
+    centroidText: (row.centroid_text as string) ?? "",
+    status:
+      (row.status as StoredTopic["status"]) === "resolved"
+        ? "resolved"
+        : "pending",
+    resolvedBy: (row.resolved_by as string | null) ?? null,
+    resolvedAt: (row.resolved_at as string | null) ?? null,
+    kbSourceId: (row.kb_source_id as string | null) ?? null,
+    questionCount: Number(row.question_count ?? 0),
+    createdAt: (row.created_at as string) ?? "",
+    updatedAt: (row.updated_at as string) ?? "",
+  };
+}
+
+/** 列出某 user 的 topics（給諮詢師端 UI）。預設只回 pending。 */
+export async function listUserTopics(
+  userId: string,
+  opts: { status?: "pending" | "resolved" | "all"; limit?: number } = {},
+): Promise<StoredTopic[]> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return [];
+  let q = supabase
+    .from("question_topics")
+    .select("*")
+    .eq("user_id", userId)
+    .order("updated_at", { ascending: false })
+    .limit(opts.limit ?? 50);
+  if (opts.status && opts.status !== "all") {
+    q = q.eq("status", opts.status);
+  }
+  const { data, error } = await q;
+  if (error) {
+    console.warn("[db] listUserTopics failed:", error.message);
+    return [];
+  }
+  return (data ?? []).map(rowToTopic);
+}
+
+/** Counselor 端用：拿某張 topic 的完整內容 + 所有成員問題（含 AI 暫時回覆）。 */
+export async function fetchTopicWithMembers(
+  topicId: string,
+): Promise<TopicWithMembers | null> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+  const { data: tRow, error: tErr } = await supabase
+    .from("question_topics")
+    .select("*")
+    .eq("id", topicId)
+    .maybeSingle();
+  if (tErr || !tRow) return null;
+  const topic = rowToTopic(tRow);
+
+  const { data: nqRows, error: nqErr } = await supabase
+    .from("normalized_questions")
+    .select(
+      "id, message_id, conversation_id, raw_question, normalized_text, intents, emotion, urgency, created_at",
+    )
+    .eq("topic_id", topicId)
+    .order("created_at", { ascending: true });
+  if (nqErr) {
+    console.warn("[db] fetchTopicWithMembers nq failed:", nqErr.message);
+    return { ...topic, members: [], counselorReplies: [] };
+  }
+
+  const members: TopicMemberQuestion[] = (nqRows ?? []).map((r) => ({
+    normalizedQuestionId: r.id as string,
+    messageId: (r.message_id as string | null) ?? null,
+    conversationId: (r.conversation_id as string | null) ?? null,
+    rawQuestion: (r.raw_question as string) ?? "",
+    normalizedText: (r.normalized_text as string) ?? "",
+    intents: Array.isArray(r.intents) ? (r.intents as string[]) : [],
+    emotion: (r.emotion as string) ?? "",
+    urgency: (r.urgency as string) ?? "中",
+    createdAt: (r.created_at as string) ?? "",
+    // AI 暫時回覆已經不再給諮詢師看 — 兩個欄位永遠回 null。
+    aiReply: null,
+    aiReplyAt: null,
+  }));
+
+  // 把這個 topic 的諮詢師回覆全部抓出來（normalized.topic_id == this topic）。
+  // 諮詢師端要看自己歷次回覆，user 端要靠這條知道引用了哪題。
+  const counselorReplies: TopicCounselorReply[] = [];
+  const conversationIds = Array.from(
+    new Set(
+      members
+        .map((m) => m.conversationId)
+        .filter((x): x is string => Boolean(x)),
+    ),
+  );
+  if (conversationIds.length > 0) {
+    const { data: replyRows } = await supabase
+      .from("chat_messages")
+      .select("id, conversation_id, content, normalized, created_at")
+      .in("conversation_id", conversationIds)
+      .eq("by_counselor", true)
+      .order("created_at", { ascending: true });
+    for (const r of replyRows ?? []) {
+      const normalized = r.normalized as
+        | {
+            topic_id?: unknown;
+            reply_to_message_id?: unknown;
+            reply_to_text?: unknown;
+          }
+        | null;
+      // 只收屬於這個 topic 的諮詢師訊息。
+      if (
+        !normalized ||
+        typeof normalized.topic_id !== "string" ||
+        normalized.topic_id !== topicId
+      ) {
+        continue;
+      }
+      counselorReplies.push({
+        messageId: r.id as string,
+        conversationId: r.conversation_id as string,
+        text: (r.content as string) ?? "",
+        createdAt: (r.created_at as string) ?? "",
+        replyToMessageId:
+          typeof normalized.reply_to_message_id === "string"
+            ? (normalized.reply_to_message_id as string)
+            : undefined,
+        replyToText:
+          typeof normalized.reply_to_text === "string"
+            ? (normalized.reply_to_text as string)
+            : undefined,
+      });
+    }
+  }
+
+  return { ...topic, members, counselorReplies };
+}
+
+export async function createTopic(input: {
+  userId: string;
+  title: string;
+  summary: string;
+  centroidText: string;
+}): Promise<StoredTopic | null> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("question_topics")
+    .insert({
+      user_id: input.userId,
+      title: input.title,
+      summary: input.summary,
+      centroid_text: input.centroidText,
+      question_count: 1,
+      updated_at: new Date().toISOString(),
+    })
+    .select("*")
+    .single();
+  if (error) {
+    console.warn("[db] createTopic failed:", error.message);
+    return null;
+  }
+  return rowToTopic(data);
+}
+
+/** 把一筆 normalized_question 掛到某個 topic 上 + 同步 topic 的 centroid / count / updated_at。 */
+export async function attachQuestionToTopic(
+  topicId: string,
+  normalizedQuestionId: string,
+  appendedText: string,
+): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return;
+  const nqRes = await supabase
+    .from("normalized_questions")
+    .update({ topic_id: topicId })
+    .eq("id", normalizedQuestionId);
+  if (nqRes.error) {
+    console.warn(
+      "[db] attachQuestionToTopic update nq failed:",
+      nqRes.error.message,
+    );
+  }
+  // 拿目前的 topic 來更新 centroid / count（不用 atomic，諮詢端是低 QPS 場景）
+  const { data: tRow } = await supabase
+    .from("question_topics")
+    .select("centroid_text, question_count")
+    .eq("id", topicId)
+    .maybeSingle();
+  const baseText = (tRow?.centroid_text as string) ?? "";
+  const baseCount = Number(tRow?.question_count ?? 0);
+  const nextText = baseText
+    ? `${baseText}\n${appendedText}`.slice(0, 4000)
+    : appendedText.slice(0, 4000);
+  await supabase
+    .from("question_topics")
+    .update({
+      centroid_text: nextText,
+      question_count: baseCount + 1,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", topicId);
+}
+
+export async function markTopicResolved(
+  topicId: string,
+  opts: { resolvedBy: string; kbSourceId?: string | null },
+): Promise<StoredTopic | null> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("question_topics")
+    .update({
+      status: "resolved",
+      resolved_by: opts.resolvedBy,
+      resolved_at: new Date().toISOString(),
+      kb_source_id: opts.kbSourceId ?? null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", topicId)
+    .select("*")
+    .single();
+  if (error) {
+    console.warn("[db] markTopicResolved failed:", error.message);
+    return null;
+  }
+
+  // 同步把所有成員 normalized_questions 也標 resolved=true（諮詢師端 UI 會淡化）
+  await supabase
+    .from("normalized_questions")
+    .update({
+      resolved: true,
+      resolved_reason: `Topic ${topicId} 已被諮詢師標記解決`,
+    })
+    .eq("topic_id", topicId);
+
+  return rowToTopic(data);
+}
+
+// ---------------------------------------------------------------------------
 // NORMALIZED QUESTIONS  (只存「不在既有 RAG KB」的新問題)
 // ---------------------------------------------------------------------------
 
@@ -578,20 +1015,66 @@ export async function fetchConversationMessages(
 
   const { data: msgRows, error: msgErr } = await supabase
     .from("chat_messages")
-    .select("id, sender, content, by_counselor, created_at")
+    .select("id, sender, content, by_counselor, normalized, created_at")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: true });
   if (msgErr) {
     console.warn("[db] fetchConversationMessages failed:", msgErr.message);
     return null;
   }
-  const messages: ChatMessage[] = (msgRows ?? []).map((m) => ({
-    id: m.id as string,
-    role: (m.sender as "user" | "assistant") ?? "assistant",
-    text: (m.content as string) ?? "",
-    byCounselor: m.by_counselor === true,
-    createdAt: (m.created_at as string) ?? new Date().toISOString(),
-  }));
+
+  // 額外把這段對話裡每一題 user msg 對應的 normalized_questions.resolved 取出來，
+  // 諮詢師端就能把「AI 已經處理掉」的問答整組打上「已完成」並淡化。
+  const userMsgIds = (msgRows ?? [])
+    .filter((m) => (m.sender as string) === "user")
+    .map((m) => m.id as string);
+  const resolvedSet = new Set<string>();
+  if (userMsgIds.length > 0) {
+    const { data: nqRows } = await supabase
+      .from("normalized_questions")
+      .select("message_id, resolved")
+      .in("message_id", userMsgIds);
+    for (const r of nqRows ?? []) {
+      if (r.resolved === true && r.message_id) {
+        resolvedSet.add(r.message_id as string);
+      }
+    }
+  }
+
+  const messages: ChatMessage[] = (msgRows ?? []).map((m) => {
+    // 1) 直接讀 by_counselor 欄位；2) 兼容舊資料 — normalized JSONB 裡可能塞 from_counselor
+    const normalized = m.normalized as
+      | {
+          from_counselor?: unknown;
+          reply_to_message_id?: unknown;
+          reply_to_text?: unknown;
+          topic_id?: unknown;
+        }
+      | null;
+    const fromCounselor =
+      m.by_counselor === true ||
+      (normalized && normalized.from_counselor === true);
+    return {
+      id: m.id as string,
+      role: (m.sender as "user" | "assistant") ?? "assistant",
+      text: (m.content as string) ?? "",
+      fromCounselor: fromCounselor === true,
+      resolved: resolvedSet.has(m.id as string),
+      replyToMessageId:
+        typeof normalized?.reply_to_message_id === "string"
+          ? (normalized.reply_to_message_id as string)
+          : undefined,
+      replyToText:
+        typeof normalized?.reply_to_text === "string"
+          ? (normalized.reply_to_text as string)
+          : undefined,
+      topicId:
+        typeof normalized?.topic_id === "string"
+          ? (normalized.topic_id as string)
+          : undefined,
+      createdAt: (m.created_at as string) ?? new Date().toISOString(),
+    };
+  });
   return {
     id: convRow.id as string,
     userId,

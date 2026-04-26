@@ -3,14 +3,12 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'models/models.dart';
 import 'screens/auth_screen.dart';
+import 'screens/career_path_screen.dart';
 import 'screens/chat_screen.dart';
 import 'screens/explore_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/persona_screen.dart';
-import 'screens/plan_roadmap_screen.dart';
-import 'screens/plan_screen.dart';
-import 'screens/plan_todos_screen.dart';
 import 'screens/skill_translator_screen.dart';
 import 'services/app_repository.dart';
 import 'services/supabase_config.dart';
@@ -56,8 +54,6 @@ class _AppShellState extends State<AppShell> {
   AppStorage? _storage;
   // 預設停留在「首頁」(index 2)。
   int _tabIndex = 2;
-  // 「計畫」：0 = 路線總覽, 1 = 路線圖, 2 = 週任務
-  int _planSubIndex = 0;
 
   @override
   void initState() {
@@ -130,59 +126,6 @@ class _AppShellState extends State<AppShell> {
       onGoToSkillTranslator: _openSkillTranslatorRoute,
     );
 
-    final planPane = Column(
-      children: [
-        Expanded(
-          child: IndexedStack(
-            index: _planSubIndex,
-            children: [
-              PlanScreen(
-                storage: storage,
-                onStorageChanged: _setStorage,
-                onGoToExplore: () => _goTo(1),
-              ),
-              PlanRoadmapScreen(storage: storage),
-              PlanTodosScreen(
-                storage: storage,
-                onStorageChanged: _setStorage,
-              ),
-            ],
-          ),
-        ),
-        Container(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-          decoration: const BoxDecoration(
-            color: AppColors.surface,
-            border: Border(top: BorderSide(color: AppColors.border)),
-          ),
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                _SubTab(
-                  label: '路線總覽',
-                  selected: _planSubIndex == 0,
-                  onTap: () => setState(() => _planSubIndex = 0),
-                ),
-                AppGaps.w8,
-                _SubTab(
-                  label: '路線圖',
-                  selected: _planSubIndex == 1,
-                  onTap: () => setState(() => _planSubIndex = 1),
-                ),
-                AppGaps.w8,
-                _SubTab(
-                  label: '週任務',
-                  selected: _planSubIndex == 2,
-                  onTap: () => setState(() => _planSubIndex = 2),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
-
     return CupertinoPageScaffold(
       backgroundColor: AppColors.bg,
       child: Column(
@@ -207,17 +150,23 @@ class _AppShellState extends State<AppShell> {
                   onOpenPlan: () => _goTo(3),
                   onOpenPersona: _openPersona,
                   onOpenChat: () => _goTo(4),
+                  onOpenSkillTranslator: _openSkillTranslatorRoute,
                 ),
                 // 3 — 職涯路徑
-                planPane,
+                CareerPathScreen(
+                  storage: storage,
+                  onStorageChanged: _setStorage,
+                  onOpenExplore: () => _goTo(1),
+                ),
                 // 4 — AI 小助理
                 ChatScreen(storage: storage),
               ],
             ),
           ),
           CupertinoTabBar(
-            backgroundColor:
-                CupertinoColors.systemBackground.resolveFrom(context),
+            backgroundColor: CupertinoColors.systemBackground.resolveFrom(
+              context,
+            ),
             currentIndex: _tabIndex,
             onTap: _goTo,
             activeColor: AppColors.brandStart,
@@ -245,44 +194,6 @@ class _AppShellState extends State<AppShell> {
             ],
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _SubTab extends StatelessWidget {
-  const _SubTab({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return CupertinoButton(
-      padding: EdgeInsets.zero,
-      minimumSize: Size.zero,
-      onPressed: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 160),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          gradient: selected ? AppColors.brandGradient : null,
-          color: selected ? null : AppColors.surfaceMuted,
-          borderRadius: BorderRadius.circular(AppRadii.pill),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w800,
-            color: selected ? CupertinoColors.white : AppColors.textPrimary,
-          ),
-        ),
       ),
     );
   }

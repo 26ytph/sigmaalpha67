@@ -54,14 +54,34 @@ class _AuthScreenState extends State<AuthScreen> {
       if (SupabaseConfig.isConfigured) {
         // 真的 Supabase 流程
         final auth = Supabase.instance.client.auth;
-        final response = _register
-            ? await auth.signUp(email: email, password: password)
-            : await auth.signInWithPassword(email: email, password: password);
-        final user = response.user;
-        if (user == null) {
-          throw const AuthException('沒有拿到使用者資訊');
+        if (_register) {
+          // 註冊：先 signUp。要拿到能直接進 onboarding 的 session，必須在
+          // Supabase Dashboard → Authentication → Providers → Email
+          //   把「Confirm email」關掉。
+          // 關掉後 signUp 直接回 user + session；保險起見，session 沒拿到時
+          // 再用密碼登入一次，避免使用者被「請去信箱按連結」卡住。
+          final response = await auth.signUp(email: email, password: password);
+          if (auth.currentSession == null) {
+            await auth.signInWithPassword(email: email, password: password);
+          }
+          final user = auth.currentUser ?? response.user;
+          if (user == null) {
+            throw const AuthException(
+              '註冊成功但沒拿到 session — 請到 Supabase Dashboard 把 Email 的 '
+              '"Confirm email" 關掉再試一次。',
+            );
+          }
+          resolvedEmail = user.email ?? email;
+        } else {
+          // 登入
+          final response =
+              await auth.signInWithPassword(email: email, password: password);
+          final user = response.user;
+          if (user == null) {
+            throw const AuthException('沒有拿到使用者資訊');
+          }
+          resolvedEmail = user.email ?? email;
         }
-        resolvedEmail = user.email ?? email;
       } else {
         // 沒設定 Supabase → mock 流程，留時間讓 UI 顯示 loading
         await Future<void>.delayed(const Duration(milliseconds: 600));

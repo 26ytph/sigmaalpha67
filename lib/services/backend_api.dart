@@ -35,6 +35,8 @@ class RemoteChatMessage {
     required this.text,
     required this.createdAt,
     this.byCounselor = false,
+    this.replyToMessageId,
+    this.replyToText,
   });
 
   final String id;
@@ -42,6 +44,10 @@ class RemoteChatMessage {
   final String text;
   final String createdAt;
   final bool byCounselor;
+  /// 諮詢師回覆專用：這則回覆對應 user 的哪一則問題（chat_messages.id）。
+  final String? replyToMessageId;
+  /// 諮詢師回覆專用：對應問題的文字快照（顯示在 bubble 上方的 ↩ 引用框）。
+  final String? replyToText;
 
   bool get fromUser => role == 'user';
 }
@@ -57,6 +63,24 @@ class ConversationHistory {
   final String id;
   final AppMode mode;
   final List<RemoteChatMessage> messages;
+}
+
+/// 後端 `POST /api/plan/generate` 回傳的單週資料。
+/// 對應 `backend/src/types/plan.ts` 的 `PlanWeek`。
+class BackendPlanWeek {
+  const BackendPlanWeek({
+    required this.week,
+    required this.title,
+    required this.goals,
+    required this.resources,
+    required this.outputs,
+  });
+
+  final int week;
+  final String title;
+  final List<String> goals;
+  final List<String> resources;
+  final List<String> outputs;
 }
 
 class BackendChatReply {
@@ -91,6 +115,104 @@ class BackendApiException implements Exception {
 
   @override
   String toString() => 'BackendApiException: $message';
+}
+
+class TopQuestion {
+  const TopQuestion({
+    required this.question,
+    required this.count,
+    required this.urgency,
+  });
+
+  final String question;
+  final int count;
+  final String urgency;
+
+  factory TopQuestion.fromJson(Map<String, dynamic> j) => TopQuestion(
+        question: (j['question'] as String?) ?? '',
+        count: (j['count'] as num?)?.toInt() ?? 0,
+        urgency: (j['urgency'] as String?) ?? '',
+      );
+}
+
+class CareerPathStat {
+  const CareerPathStat({
+    required this.tag,
+    required this.label,
+    required this.interestedUsers,
+  });
+
+  final String tag;
+  final String label;
+  final int interestedUsers;
+
+  factory CareerPathStat.fromJson(Map<String, dynamic> j) => CareerPathStat(
+        tag: (j['tag'] as String?) ?? '',
+        label: (j['label'] as String?) ?? '',
+        interestedUsers: (j['interestedUsers'] as num?)?.toInt() ?? 0,
+      );
+}
+
+class SkillGap {
+  const SkillGap({required this.skill, required this.mentions});
+
+  final String skill;
+  final int mentions;
+
+  factory SkillGap.fromJson(Map<String, dynamic> j) => SkillGap(
+        skill: (j['skill'] as String?) ?? '',
+        mentions: (j['mentions'] as num?)?.toInt() ?? 0,
+      );
+}
+
+class StuckTask {
+  const StuckTask({
+    required this.taskKey,
+    required this.title,
+    required this.stuckUsers,
+  });
+
+  final String taskKey;
+  final String title;
+  final int stuckUsers;
+
+  factory StuckTask.fromJson(Map<String, dynamic> j) => StuckTask(
+        taskKey: (j['taskKey'] as String?) ?? '',
+        title: (j['title'] as String?) ?? '',
+        stuckUsers: (j['stuckUsers'] as num?)?.toInt() ?? 0,
+      );
+}
+
+class StartupNeed {
+  const StartupNeed({required this.stage, required this.users});
+
+  final String stage;
+  final int users;
+
+  factory StartupNeed.fromJson(Map<String, dynamic> j) => StartupNeed(
+        stage: (j['stage'] as String?) ?? '',
+        users: (j['users'] as num?)?.toInt() ?? 0,
+      );
+}
+
+class PolicySuggestion {
+  const PolicySuggestion({
+    required this.title,
+    required this.rationale,
+    required this.proposedActions,
+  });
+
+  final String title;
+  final String rationale;
+  final List<String> proposedActions;
+
+  factory PolicySuggestion.fromJson(Map<String, dynamic> j) => PolicySuggestion(
+        title: (j['title'] as String?) ?? '',
+        rationale: (j['rationale'] as String?) ?? '',
+        proposedActions: ((j['proposedActions'] as List?) ?? const [])
+            .whereType<String>()
+            .toList(),
+      );
 }
 
 class BackendApi {
@@ -223,7 +345,11 @@ class BackendApi {
                 role: (mm['role'] as String?) ?? 'assistant',
                 text: (mm['text'] as String?) ?? '',
                 createdAt: (mm['createdAt'] as String?) ?? '',
-                byCounselor: mm['byCounselor'] == true,
+                // 後端 type 用 fromCounselor，舊 client 讀 byCounselor — 兩個都接，相容。
+                byCounselor:
+                    mm['byCounselor'] == true || mm['fromCounselor'] == true,
+                replyToMessageId: mm['replyToMessageId'] as String?,
+                replyToText: mm['replyToText'] as String?,
               ),
             );
           }
@@ -256,6 +382,14 @@ class BackendApi {
       );
     }
     return profile;
+  }
+
+  /// 從目前 profile 跑 Gemini 生成一段自介。後端會用 in-memory store 的
+  /// profile（chat / persona 路徑都會 write-through 進去），所以前端
+  /// 不用再把 profile 上傳一次。
+  static Future<String> generateSelfIntro() async {
+    final data = await _request('POST', '/api/persona/self-intro');
+    return (data['selfIntro'] as String?)?.trim() ?? '';
   }
 
   static Future<Persona> generatePersona({
@@ -326,6 +460,187 @@ class BackendApi {
     );
   }
 
+  /// 呼叫後端 `POST /api/plan/generate` 取得 LLM 客製化的 4 週計畫。
+  ///
+  /// 回傳的是「headline + weeks」這兩個 LLM 真正要算的部分；
+  /// `basedOnTopTags` / `recommendedRoles` 後端是用 deterministic 算法回的，
+  /// 但本 client 不需要 — Career Path 畫面只用 headline 與 weeks。
+  ///
+  /// 失敗（網路 / 401 / Gemini quota）回 `null`，呼叫端可以 fallback 到
+  /// 本機 `lib/logic/generate_plan.dart`。
+  static Future<({String headline, List<BackendPlanWeek> weeks})?>
+  generatePlan({
+    required AppMode mode,
+    required List<String> likedRoleIds,
+    Persona? persona,
+  }) async {
+    try {
+      final body = <String, dynamic>{
+        'mode': mode == AppMode.startup ? 'startup' : 'career',
+        'likedRoleIds': likedRoleIds,
+        if (persona != null && !persona.isEmpty)
+          'persona': _personaToJson(persona),
+      };
+      final data = await _request('POST', '/api/plan/generate', body: body);
+      final raw = data['plan'];
+      if (raw is! Map) return null;
+      final plan = Map<String, dynamic>.from(raw);
+      final headline = (plan['headline'] as String?)?.trim() ?? '';
+      final weeksRaw = (plan['weeks'] as List?) ?? const [];
+      final weeks = <BackendPlanWeek>[];
+      for (final w in weeksRaw) {
+        if (w is! Map) continue;
+        final m = Map<String, dynamic>.from(w);
+        final week = (m['week'] as num?)?.toInt() ?? 0;
+        final title = (m['title'] as String?)?.trim() ?? '';
+        if (week <= 0 || title.isEmpty) continue;
+        weeks.add(
+          BackendPlanWeek(
+            week: week,
+            title: title,
+            goals: List<String>.from((m['goals'] as List?) ?? const []),
+            resources: List<String>.from((m['resources'] as List?) ?? const []),
+            outputs: List<String>.from((m['outputs'] as List?) ?? const []),
+          ),
+        );
+      }
+      if (headline.isEmpty || weeks.isEmpty) return null;
+      return (headline: headline, weeks: weeks);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 呼叫後端 `POST /api/plan/refine` — 把使用者一段自然語言（例如
+  /// 「我想投 DevOps 實習」「我已經會 Docker，幫我跳過」）丟給 Gemini，
+  /// 請它依現有 [currentPlan] 產出新版（保留 task id 以維持勾選狀態）。
+  ///
+  /// 回 `null` 代表後端不通（連線層級失敗）。`fromAi: false` 代表後端有回，
+  /// 但 Gemini 那邊掛了；此時 [message] 會帶人話錯誤訊息給上層 UI 顯示。
+  static Future<({CustomPlan plan, bool fromAi, String? message})?>
+      refinePlan({
+    required String prompt,
+    required CustomPlan currentPlan,
+    required AppMode mode,
+    Persona? persona,
+  }) async {
+    try {
+      final body = <String, dynamic>{
+        'prompt': prompt,
+        'currentPlan': _customPlanForRefineJson(currentPlan),
+        'mode': mode == AppMode.startup ? 'startup' : 'career',
+        if (persona != null && !persona.isEmpty)
+          'persona': _personaToJson(persona),
+      };
+      final data = await _request('POST', '/api/plan/refine', body: body);
+      final raw = data['plan'];
+      if (raw is! Map) return null;
+      final fromAi = data['fromAi'] == true;
+      final message = data['message'] as String?;
+      final parsed = _customPlanFromRefineJson(
+        Map<String, dynamic>.from(raw),
+        fallbackHeadline: currentPlan.headline,
+      );
+      if (parsed == null) return null;
+      return (
+        plan: parsed.copyWith(fromAi: fromAi, goalPrompt: prompt),
+        fromAi: fromAi,
+        message: message,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Map<String, dynamic> _customPlanForRefineJson(CustomPlan p) => {
+        'headline': p.headline,
+        'weeks': p.weeks
+            .map(
+              (w) => {
+                'week': w.week,
+                'title': w.title,
+                'tasks': w.tasks
+                    .map(
+                      (t) => {
+                        'id': t.id,
+                        'title': t.title,
+                        'description': t.description,
+                        'section': t.section,
+                        'done': t.done,
+                        'userAdded': t.userAdded,
+                      },
+                    )
+                    .toList(),
+              },
+            )
+            .toList(),
+      };
+
+  static CustomPlan? _customPlanFromRefineJson(
+    Map<String, dynamic> j, {
+    required String fallbackHeadline,
+  }) {
+    final headline = (j['headline'] as String?)?.trim() ?? fallbackHeadline;
+    final weeksRaw = (j['weeks'] as List?) ?? const [];
+    final weeks = <CustomPlanWeek>[];
+    for (final w in weeksRaw) {
+      if (w is! Map) continue;
+      final m = Map<String, dynamic>.from(w);
+      final week = (m['week'] as num?)?.toInt() ?? 0;
+      final title = (m['title'] as String?)?.trim() ?? '';
+      if (week <= 0 || title.isEmpty) continue;
+      final tasksRaw = (m['tasks'] as List?) ?? const [];
+      final tasks = <PlanTask>[];
+      for (final t in tasksRaw) {
+        if (t is! Map) continue;
+        final tm = Map<String, dynamic>.from(t);
+        final id = ((tm['id'] as String?) ?? '').trim();
+        final taskTitle = ((tm['title'] as String?) ?? '').trim();
+        if (id.isEmpty || taskTitle.isEmpty) continue;
+        final sectionRaw =
+            ((tm['section'] as String?) ?? 'goals').toLowerCase();
+        final section = (sectionRaw == 'resources' ||
+                sectionRaw == 'outputs')
+            ? sectionRaw
+            : 'goals';
+        tasks.add(
+          PlanTask(
+            id: id,
+            title: taskTitle,
+            description: ((tm['description'] as String?) ?? '').trim(),
+            section: section,
+          ),
+        );
+      }
+      if (tasks.isEmpty) continue;
+      weeks.add(CustomPlanWeek(week: week, title: title, tasks: tasks));
+    }
+    if (weeks.isEmpty) return null;
+    return CustomPlan(
+      headline: headline,
+      weeks: weeks,
+      lastUpdated: DateTime.now().toIso8601String(),
+    );
+  }
+
+  /// 從後端拉滑卡結果（GET /api/swipe/summary）。
+  /// 換裝置 / 清快取後，這是把使用者按過 ❤ 的職位帶回來的唯一管道。
+  /// 之後 `generatePlan(likedRoleIds, ...)` 才有得算。
+  static Future<({List<String> likedRoleIds, List<String> dislikedRoleIds})>
+  fetchSwipeSummary() async {
+    final data = await _request('GET', '/api/swipe/summary');
+    final summary = data['summary'];
+    if (summary is! Map) {
+      return (likedRoleIds: const <String>[], dislikedRoleIds: const <String>[]);
+    }
+    final liked = (summary['likedRoleIds'] as List?) ?? const [];
+    final disliked = (summary['dislikedRoleIds'] as List?) ?? const [];
+    return (
+      likedRoleIds: List<String>.from(liked),
+      dislikedRoleIds: List<String>.from(disliked),
+    );
+  }
+
   static Future<SkillTranslation> translateSkill(String raw) async {
     final data = await _request(
       'POST',
@@ -348,6 +663,17 @@ class BackendApi {
     final raw = data['updatedPersona'];
     if (raw is Map) return _personaFromJson(Map<String, dynamic>.from(raw));
     return null;
+  }
+
+  /// 列出 user 已存的所有技能翻譯（GET /api/skills/translations）。
+  static Future<List<SkillTranslation>> listSkillTranslations() async {
+    final data = await _request('GET', '/api/skills/translations');
+    final raw = data['translations'];
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((m) => _skillTranslationFromJson(Map<String, dynamic>.from(m)))
+        .toList(growable: false);
   }
 
   static Future<BackendChatReply> sendChatMessage({
@@ -423,6 +749,67 @@ class BackendApi {
     required String note,
   }) async {
     await _request('PUT', '/api/plan/weeks/$week/note', body: {'note': note});
+  }
+
+  // ===== Policy Dashboard =====
+  static Future<List<TopQuestion>> fetchTopQuestions() async {
+    final data = await _request('GET', '/api/admin/dashboard/top-questions');
+    final items = (data['items'] as List?) ?? const [];
+    return items
+        .whereType<Map>()
+        .map((m) => TopQuestion.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  static Future<List<CareerPathStat>> fetchTopCareerPaths() async {
+    final data = await _request('GET', '/api/admin/dashboard/top-career-paths');
+    final items = (data['items'] as List?) ?? const [];
+    return items
+        .whereType<Map>()
+        .map((m) => CareerPathStat.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  static Future<List<SkillGap>> fetchSkillGaps() async {
+    final data = await _request('GET', '/api/admin/dashboard/skill-gaps');
+    final items = (data['items'] as List?) ?? const [];
+    return items
+        .whereType<Map>()
+        .map((m) => SkillGap.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  static Future<List<StuckTask>> fetchStuckTasks() async {
+    final data = await _request('GET', '/api/admin/dashboard/stuck-tasks');
+    final items = (data['items'] as List?) ?? const [];
+    return items
+        .whereType<Map>()
+        .map((m) => StuckTask.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  static Future<List<StartupNeed>> fetchStartupNeeds() async {
+    final data = await _request('GET', '/api/admin/dashboard/startup-needs');
+    final items = (data['items'] as List?) ?? const [];
+    return items
+        .whereType<Map>()
+        .map((m) => StartupNeed.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  static Future<List<PolicySuggestion>> fetchPolicySuggestions({
+    String focusArea = 'career',
+  }) async {
+    final data = await _request(
+      'POST',
+      '/api/admin/dashboard/policy-suggestions',
+      body: {'focusArea': focusArea},
+    );
+    final items = (data['suggestions'] as List?) ?? const [];
+    return items
+        .whereType<Map>()
+        .map((m) => PolicySuggestion.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
   }
 
   static Future<Map<String, dynamic>> _request(

@@ -1,6 +1,5 @@
 // =====================================================================
-// FAKE engine — keyword-based skill translation.
-// Mirrors `lib/logic/skill_translator.dart`. Replace with an LLM call.
+// Skill translator — Gemini-driven，失敗時退回 keyword-based fallback。
 // =====================================================================
 
 import type { SkillTranslation } from "@/types/skill";
@@ -17,8 +16,34 @@ const KEYWORD_SKILLS: Array<{ kw: RegExp; skills: string[] }> = [
   { kw: /(分析|統計|數據|excel|sql)/i, skills: ["資料處理", "假設驗證", "結論歸納"] },
 ];
 
-export function translateExperience(raw: string): SkillTranslation {
+const SYSTEM_INSTRUCTION =
+  "你是 EmploYA! 的『技能翻譯』助理。" +
+  "把使用者的口語經驗描述拆成數段，每段萃取 3–4 個職場能力；" +
+  "再生成一句可直接放履歷的中文敘述（量化、動詞開頭、自然不誇飾）。" +
+  "輸出必須是合法 JSON，不要加 Markdown / code fence / 解釋。";
+
+type GeminiOut = {
+  groups: Array<{ experience: string; skills: string[] }>;
+  resumeSentence: string;
+};
+
+/** Public API — chat / route 呼叫這支。Async 因為要打 Gemini。 */
+export async function translateExperience(raw: string): Promise<SkillTranslation> {
   const text = raw.trim();
+  const fromGemini = await tryGemini(text);
+  if (fromGemini) {
+    return {
+      id: newId("st"),
+      rawExperience: text,
+      groups: fromGemini.groups,
+      resumeSentence: fromGemini.resumeSentence,
+      createdAt: new Date().toISOString(),
+    };
+  }
+  return heuristicTranslate(text);
+}
+
+function heuristicTranslate(text: string): SkillTranslation {
   const segments = text
     .split(/[，,。.；;\n]/)
     .map((s) => s.trim())
@@ -48,4 +73,121 @@ export function translateExperience(raw: string): SkillTranslation {
     resumeSentence,
     createdAt: new Date().toISOString(),
   };
+}
+
+async function tryGemini(text: string): Promise<GeminiOut | null> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || !text) return null;
+
+  const modelsToTry = Array.from(
+    new Set(
+      (
+        process.env.GEMINI_MODEL_CHAIN ||
+        [
+          process.env.GEMINI_MODEL || "gemini-2.5-flash",
+          process.env.GEMINI_FALLBACK_MODEL || "gemini-2.5-flash-lite",
+          process.env.GEMINI_FALLBACK_MODEL_2 || "gemini-flash-latest",
+          "gemini-flash-lite-latest",
+        ].join(",")
+      )
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  );
+
+  const userPrompt =
+    `=== 使用者口語經驗 ===\n${text}\n\n` +
+    `=== 任務 ===\n` +
+    `1) 把上面內容拆成 1–4 段「事件」（按語意，不一定要照標點）。\n` +
+    `2) 每段萃取 3–4 個職場能力（中文短語，不要 "..."）。\n` +
+    `3) 寫一句 50–90 字、可放履歷的中文句子（動詞開頭、可量化、避免誇飾）。\n` +
+    `=== 輸出格式（JSON only） ===\n` +
+    `{\n` +
+    `  "groups": [{ "experience": "原始片段", "skills": ["能力1","能力2","能力3"] }],\n` +
+    `  "resumeSentence": "可放履歷的句子"\n` +
+    `}`;
+
+  const requestBody = JSON.stringify({
+    system_instruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
+    contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+    generationConfig: {
+      temperature: 0.3,
+      maxOutputTokens: 600,
+      responseMimeType: "application/json",
+    },
+  });
+
+  for (const model of modelsToTry) {
+    try {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+        model,
+      )}:generateContent`;
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+        body: requestBody,
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        console.error(
+          `[skillTranslator] ${model} HTTP ${res.status}: ${body.slice(0, 160)}`,
+        );
+        if (res.status === 429 || res.status >= 500) continue;
+        return null;
+      }
+      const json = (await res.json()) as {
+        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      };
+      const out = (json.candidates?.[0]?.content?.parts ?? [])
+        .map((p) => p.text ?? "")
+        .join("")
+        .trim();
+      const parsed = safeParse(out);
+      if (parsed) return parsed;
+    } catch (err) {
+      console.error("[skillTranslator] gemini call failed:", err);
+    }
+  }
+  return null;
+}
+
+function safeParse(text: string): GeminiOut | null {
+  let body = text.trim();
+  const fence = body.match(/```(?:json)?\s*([\s\S]+?)\s*```/i);
+  if (fence) body = fence[1];
+  if (!body.startsWith("{")) {
+    const f = body.indexOf("{");
+    const l = body.lastIndexOf("}");
+    if (f === -1 || l === -1 || l < f) return null;
+    body = body.slice(f, l + 1);
+  }
+  let raw: { groups?: unknown; resumeSentence?: unknown };
+  try {
+    raw = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  const groups = Array.isArray(raw.groups)
+    ? raw.groups
+        .map((g) => {
+          if (!g || typeof g !== "object") return null;
+          const exp = (g as { experience?: unknown }).experience;
+          const sk = (g as { skills?: unknown }).skills;
+          const experience = typeof exp === "string" ? exp.trim() : "";
+          const skills = Array.isArray(sk)
+            ? sk
+                .map((s) => (typeof s === "string" ? s.trim() : ""))
+                .filter((s) => s.length > 0)
+                .slice(0, 5)
+            : [];
+          if (!experience || skills.length === 0) return null;
+          return { experience, skills };
+        })
+        .filter((x): x is { experience: string; skills: string[] } => x !== null)
+    : [];
+  const resumeSentence =
+    typeof raw.resumeSentence === "string" ? raw.resumeSentence.trim() : "";
+  if (groups.length === 0 || !resumeSentence) return null;
+  return { groups, resumeSentence };
 }

@@ -1,7 +1,9 @@
 import 'package:flutter/cupertino.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../data/daily_questions.dart';
 import '../data/roles.dart';
+import '../data/subsidy_links.dart';
 import '../models/models.dart';
 import '../services/app_repository.dart';
 import '../utils/date_util.dart';
@@ -24,6 +26,7 @@ class HomeScreen extends StatefulWidget {
     required this.onOpenPlan,
     required this.onOpenPersona,
     required this.onOpenChat,
+    required this.onOpenSkillTranslator,
   });
 
   final AppStorage storage;
@@ -32,6 +35,7 @@ class HomeScreen extends StatefulWidget {
   final VoidCallback onOpenPlan;
   final VoidCallback onOpenPersona;
   final VoidCallback onOpenChat;
+  final VoidCallback onOpenSkillTranslator;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -60,8 +64,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final pool = likedTagsList.isNotEmpty
         ? dailyQuestions
-            .where((q) => _intersect(q.roleTags, likedTagsList))
-            .toList()
+              .where((q) => _intersect(q.roleTags, likedTagsList))
+              .toList()
         : dailyQuestions;
 
     if (pool.isEmpty) {
@@ -141,8 +145,11 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           Row(
             children: [
-              const Icon(CupertinoIcons.flame_fill,
-                  size: 14, color: AppColors.brandStart),
+              const Icon(
+                CupertinoIcons.flame_fill,
+                size: 14,
+                color: AppColors.brandStart,
+              ),
               AppGaps.w6,
               const Text(
                 '每日一題',
@@ -155,7 +162,9 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const Spacer(),
               Text(
-                answered != null ? '已答 ・ streak ${storage.strike.current}' : '答完 +1 streak',
+                answered != null
+                    ? '已答 ・ streak ${storage.strike.current}'
+                    : '答完 +1 streak',
                 style: const TextStyle(
                   fontSize: 11,
                   color: AppColors.textTertiary,
@@ -175,7 +184,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _topBar(UserProfile profile) {
-    final letter = profile.name.isNotEmpty ? profile.name.characters.first : 'E';
+    final letter = profile.name.isNotEmpty
+        ? profile.name.characters.first
+        : 'E';
     final greet = profile.name.isNotEmpty ? '哈囉，${profile.name}' : '哈囉';
     return Row(
       children: [
@@ -184,7 +195,9 @@ class _HomeScreenState extends State<HomeScreen> {
           height: 46,
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            gradient: _isStartup ? AppColors.startupGradient : AppColors.brandGradient,
+            gradient: _isStartup
+                ? AppColors.startupGradient
+                : AppColors.brandGradient,
             shape: BoxShape.circle,
             boxShadow: AppColors.shadowSoft,
           ),
@@ -215,7 +228,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   AppGaps.w8,
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 2,
+                    ),
                     decoration: BoxDecoration(
                       gradient: _isStartup
                           ? AppColors.startupGradient
@@ -385,43 +401,180 @@ class _HomeScreenState extends State<HomeScreen> {
         onTap: widget.onOpenPlan,
       ),
       _FeatureEntry(
+        icon: CupertinoIcons.text_badge_plus,
+        title: '技能翻譯',
+        subtitle: '把生活經驗變履歷',
+        onTap: widget.onOpenSkillTranslator,
+      ),
+      _FeatureEntry(
         icon: CupertinoIcons.chat_bubble_2_fill,
         title: 'YAYA - AI 助理',
         subtitle: '帶交接單的對話',
         onTap: widget.onOpenChat,
       ),
     ];
+    final subsidies = _isStartup ? startupSubsidies : jobSubsidies;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Padding(
-          padding: EdgeInsets.only(left: 4, bottom: 10),
-          child: Text(
-            '快速進入',
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w800,
-              color: AppColors.textSecondary,
-            ),
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 10),
+          child: Row(
+            children: [
+              Text(
+                _isStartup ? '青年創業補助' : '青年求職補助',
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+              AppGaps.w6,
+              const Text(
+                '臺北市政府',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textTertiary,
+                ),
+              ),
+            ],
           ),
         ),
-        Row(
-          children: [
-            Expanded(child: _featureTile(entries[0])),
-            AppGaps.w8,
-            Expanded(child: _featureTile(entries[1])),
-          ],
-        ),
-        AppGaps.h8,
-        Row(
-          children: [
-            Expanded(child: _featureTile(entries[2])),
-            AppGaps.w8,
-            Expanded(child: _featureTile(entries[3])),
-          ],
+        Container(
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(AppRadii.lg),
+            boxShadow: AppColors.shadowSoft,
+          ),
+          child: Column(
+            children: [
+              for (var i = 0; i < subsidies.length; i++) ...[
+                if (i > 0)
+                  Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 14),
+                    height: 1,
+                    color: AppColors.border,
+                  ),
+                _subsidyTile(subsidies[i]),
+              ],
+            ],
+          ),
         ),
       ],
     );
+  }
+
+  Widget _subsidyTile(SubsidyLink s) {
+    return CupertinoButton(
+      padding: EdgeInsets.zero,
+      onPressed: () => _openSubsidy(s),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+        child: Row(
+          children: [
+            Container(
+              width: 32,
+              height: 32,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                gradient: _isStartup
+                    ? AppColors.startupGradient
+                    : AppColors.brandGradient,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(
+                CupertinoIcons.gift_fill,
+                size: 14,
+                color: CupertinoColors.white,
+              ),
+            ),
+            AppGaps.w10,
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          s.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                      ),
+                      if (s.isNew) ...[
+                        AppGaps.w6,
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 5,
+                            vertical: 1,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFAEEDA),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Text(
+                            'NEW',
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w800,
+                              color: Color(0xFF85500B),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  AppGaps.h2,
+                  Text(
+                    s.tagline,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      height: 1.4,
+                      color: AppColors.textTertiary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(
+              CupertinoIcons.arrow_up_right_square,
+              size: 16,
+              color: AppColors.textTertiary,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openSubsidy(SubsidyLink s) async {
+    final uri = Uri.tryParse(s.url);
+    if (uri == null) return;
+    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!ok && mounted) {
+      await showCupertinoDialog<void>(
+        context: context,
+        builder: (ctx) => CupertinoAlertDialog(
+          title: const Text('無法開啟連結'),
+          content: Text(s.url),
+          actions: [
+            CupertinoDialogAction(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('好'),
+            ),
+          ],
+        ),
+      );
+    }
   }
 
   Widget _featureTile(_FeatureEntry e) {
@@ -473,8 +626,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
             ),
-            const Icon(CupertinoIcons.chevron_right,
-                size: 14, color: AppColors.textTertiary),
+            const Icon(
+              CupertinoIcons.chevron_right,
+              size: 14,
+              color: AppColors.textTertiary,
+            ),
           ],
         ),
       ),
@@ -482,7 +638,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _likedRolesPreview(List<RoleId> liked) {
-    final likedRoles = roles.where((r) => liked.contains(r.id)).take(3).toList();
+    final likedRoles = roles
+        .where((r) => liked.contains(r.id))
+        .take(3)
+        .toList();
     if (likedRoles.isEmpty) return const SizedBox.shrink();
     return Container(
       padding: const EdgeInsets.all(18),
@@ -508,8 +667,11 @@ class _HomeScreenState extends State<HomeScreen> {
               padding: const EdgeInsets.only(bottom: 8),
               child: Row(
                 children: [
-                  const Icon(CupertinoIcons.heart_fill,
-                      size: 14, color: AppColors.brandStart),
+                  const Icon(
+                    CupertinoIcons.heart_fill,
+                    size: 14,
+                    color: AppColors.brandStart,
+                  ),
                   AppGaps.w8,
                   Expanded(
                     child: Text(
@@ -547,7 +709,11 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       child: const Row(
         children: [
-          Icon(CupertinoIcons.flame_fill, color: CupertinoColors.white, size: 22),
+          Icon(
+            CupertinoIcons.flame_fill,
+            color: CupertinoColors.white,
+            size: 22,
+          ),
           AppGaps.w12,
           Expanded(
             child: Column(

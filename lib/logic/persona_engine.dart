@@ -43,9 +43,7 @@ class PersonaEngine {
         strengths.addAll(g.skills);
       }
     }
-    if (strengths.isEmpty) {
-      strengths.addAll(['溝通協調', '時間管理', '自學能力']);
-    }
+    // 不塞預設技能 — 沒填就空著，讓 user 自己用「技能翻譯」加。
 
     final skillGaps = _inferSkillGapsFromTags(topTags.map((e) => e.key).toList());
     final concerns = profile.concerns.isNotEmpty

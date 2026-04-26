@@ -19,7 +19,7 @@ export const POST = withAuth(async (req, { auth }) => {
     body.likedRoleIds ??
     buildSwipeSummary(store.swipes.get(auth.userId) ?? []).likedRoleIds;
 
-  const plan = generatePlan({
+  const plan = await generatePlan({
     mode,
     likedRoleIds: liked,
     persona: body.persona ?? store.personas.get(auth.userId) ?? null,

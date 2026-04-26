@@ -1,4 +1,5 @@
 import { KNOWLEDGE_BASE_SEED } from "@/data/knowledgeBase";
+import * as db from "@/lib/db";
 import { newId, store } from "@/lib/store";
 import type { Persona } from "@/types/persona";
 import type { Profile } from "@/types/profile";
@@ -47,11 +48,33 @@ const RAG_TRIGGER_TERMS = [
   "申請",
   "預約",
   "資格",
+  "課程活動",
+  "報名",
   "文組",
   "資料分析",
   "sql",
   "共享空間",
   "咖啡廳",
+  "住宅",
+  "社宅",
+  "租屋",
+  "研究",
+  "調查",
+  "統計",
+  "青年需求",
+  "政策建議",
+  "痛點",
+  "趨勢",
+  "焦慮",
+  "壓力",
+  "迷惘",
+  "沒用",
+  "快畢業",
+  "畢業",
+  "應屆",
+  "方向不明",
+  "不知道自己",
+  "卡住",
 ];
 
 const KNOWN_TERMS = [
@@ -83,6 +106,35 @@ const KNOWN_TERMS = [
   "寵物友善咖啡廳",
   "青年局",
   "臺北青年職涯發展中心",
+  "職前準備",
+  "青年資源",
+  "創業基地",
+  "安心樂租",
+  "創業入門課程第二梯次",
+  "商業模式畫布",
+  "市場趨勢",
+  "籌資",
+  "法規稅務",
+  "財務報表",
+  "市場行銷",
+  "數據思維",
+  "AI 應用",
+  "餐飲服務",
+  "零售批發",
+  "文創產業",
+  "專業技能訓練",
+  "專業證照課程",
+  "媒合就業機會",
+  "心理健康",
+  "畢業焦慮",
+  "畢業轉銜",
+  "應屆生",
+  "第一份工作",
+  "方向釐清",
+  "能力盤點",
+  "信心受挫",
+  "心理支持",
+  "職涯發展諮詢",
   "tys",
   "star",
 ];
@@ -91,6 +143,32 @@ const EXPANSIONS: Array<{ match: string[]; add: string[] }> = [
   {
     match: ["文組"],
     add: ["技能翻譯", "履歷", "職涯焦慮", "企劃", "溝通", "資料整理", "職涯諮詢"],
+  },
+  {
+    match: ["焦慮", "壓力", "迷惘", "沒用", "卡住"],
+    add: [
+      "畢業焦慮",
+      "職涯探索",
+      "心理支持",
+      "職涯諮詢",
+      "能力盤點",
+      "方向釐清",
+      "青年生涯問題調查",
+      "諮詢師接手包",
+    ],
+  },
+  {
+    match: ["畢業", "快畢業", "應屆"],
+    add: [
+      "應屆畢業生",
+      "畢業轉銜",
+      "第一份工作",
+      "職涯發展諮詢",
+      "職涯探索",
+      "履歷健檢",
+      "專業技能訓練",
+      "媒合就業機會",
+    ],
   },
   {
     match: ["資料分析", "數據分析", "data"],
@@ -106,11 +184,22 @@ const EXPANSIONS: Array<{ match: string[]; add: string[] }> = [
   },
   {
     match: ["創業", "青創", "startup"],
-    add: ["創業諮詢", "創業貸款", "商業模式", "市場驗證", "共享空間", "創業課程"],
+    add: [
+      "創業諮詢",
+      "創業貸款",
+      "商業模式",
+      "市場驗證",
+      "共享空間",
+      "創業課程",
+      "創業入門課程第二梯次",
+      "貸款補助",
+      "創業輔導",
+      "培訓課程",
+    ],
   },
   {
     match: ["咖啡廳", "寵物友善咖啡廳"],
-    add: ["創業", "創業諮詢", "商業模式", "市場驗證", "創業貸款", "創業課程"],
+    add: ["創業", "創業諮詢", "商業模式", "市場驗證", "創業貸款", "創業課程", "餐飲服務"],
   },
   {
     match: ["實習"],
@@ -120,9 +209,26 @@ const EXPANSIONS: Array<{ match: string[]; add: string[] }> = [
     match: ["諮詢"],
     add: ["職涯諮詢", "創業諮詢", "預約", "接手包", "一對一"],
   },
+  {
+    match: ["住宅", "社宅", "租屋"],
+    add: ["居住資源", "安心樂租", "社宅統一登記", "青年住宅", "友善屋源"],
+  },
+  {
+    match: ["研究", "調查", "統計", "青年需求", "政策建議", "痛點"],
+    add: ["青年生涯問題調查", "就業職涯相關", "居住相關", "心理健康相關", "創業需求"],
+  },
 ];
 
-type QueryIntent = "startup" | "course" | "subsidy" | "career" | "internship" | "faq" | "general";
+type QueryIntent =
+  | "startup"
+  | "course"
+  | "subsidy"
+  | "career"
+  | "internship"
+  | "faq"
+  | "housing"
+  | "research"
+  | "general";
 
 export type RagQueryResult = {
   answer: string;
@@ -143,6 +249,46 @@ export function ensureKnowledgeBaseSeeded(): void {
   if (store.knowledgeSeeded) return;
   indexKnowledgeSources(KNOWLEDGE_BASE_SEED);
   store.knowledgeSeeded = true;
+}
+
+/**
+ * 確認 Supabase 上 counselor_faqs 已被載入 in-memory KB。
+ *
+ *   - serverless cold start 後 in-memory store 會空掉 → 諮詢師寫過的 FAQ 會「掉」。
+ *   - 這裡用 60 秒 TTL 重新撈一次。聊天高峰時通常只在第一個 request 命中 DB。
+ *   - 失敗只 log，不丟出錯誤；KB 至少還有 KNOWLEDGE_BASE_SEED 撐著。
+ */
+let lastCounselorFaqLoadAt = 0;
+const COUNSELOR_FAQ_TTL_MS = 60_000;
+
+export async function ensureCounselorFaqsLoaded(opts: {
+  force?: boolean;
+} = {}): Promise<number> {
+  const now = Date.now();
+  if (!opts.force && now - lastCounselorFaqLoadAt < COUNSELOR_FAQ_TTL_MS) {
+    return 0;
+  }
+  lastCounselorFaqLoadAt = now;
+  try {
+    ensureKnowledgeBaseSeeded();
+    const faqs = await db.listCounselorFaqs(500);
+    for (const faq of faqs) {
+      upsertKnowledgeSource(
+        buildCounselorFaqSource({
+          question: faq.question,
+          answer: faq.answer,
+          caseId: faq.id,
+          tags: faq.tags?.length
+            ? faq.tags
+            : ["諮詢師審核", "歷史案例"],
+        }),
+      );
+    }
+    return faqs.length;
+  } catch (e) {
+    console.warn("[rag] ensureCounselorFaqsLoaded failed:", e);
+    return 0;
+  }
 }
 
 export function indexKnowledgeSources(
@@ -204,6 +350,7 @@ export function upsertKnowledgeSource(input: KnowledgeSourceInput): {
 
 export function searchKnowledge(opts: {
   query: string;
+  intentQuestion?: string;
   topK?: number;
   category?: KnowledgeCategory;
   sourceType?: KnowledgeSourceType;
@@ -213,7 +360,8 @@ export function searchKnowledge(opts: {
   const topK = clampTopK(opts.topK);
   const queryTokens = expandTokens(extractTokens(opts.query));
   const queryEmbedding = embedTokens(queryTokens);
-  const intent = detectIntent(opts.query);
+  const intentQuestion = opts.intentQuestion ?? opts.query;
+  const intent = detectIntent(intentQuestion);
 
   const scored = [...store.knowledgeChunks.values()]
     .map((chunk) => {
@@ -226,7 +374,7 @@ export function searchKnowledge(opts: {
       const sourceTokens = expandTokens(extractTokens(sourceText));
       const vectorScore = cosineSimilarity(queryEmbedding, chunk.embedding);
       const overlapScore = tokenOverlap(queryTokens, sourceTokens);
-      const boost = metadataBoost(intent, source, opts.query);
+      const boost = metadataBoost(intent, source, intentQuestion);
       const score = Math.min(1, vectorScore * 0.68 + overlapScore * 0.24 + boost);
 
       return toRetrievedChunk(chunk, source, roundScore(score));
@@ -248,8 +396,11 @@ export async function answerRagQuery(opts: {
   sourceType?: KnowledgeSourceType;
   history?: Array<{ role: "user" | "assistant"; text: string }>;
 }): Promise<RagQueryResult> {
+  const intent = detectIntent(opts.question);
+  const searchQuery = intent === "research" ? opts.question : buildSearchQuery(opts);
   const retrievedChunks = searchKnowledge({
-    query: buildSearchQuery(opts),
+    query: searchQuery,
+    intentQuestion: opts.question,
     topK: opts.topK ?? DEFAULT_TOP_K,
     category: opts.category,
     sourceType: opts.sourceType,
@@ -360,6 +511,7 @@ function chunkKnowledgeSource(source: KnowledgeSource): KnowledgeChunk[] {
       requiredDocuments: source.requiredDocuments,
       tags: source.tags,
       approvedByCounselor: source.approvedByCounselor,
+      sourceMetadata: source.metadata,
       chunkIndex: index,
     },
     embedding: embedText(`${chunkText}\n${JSON.stringify(source.metadata ?? {})}`),
@@ -380,6 +532,11 @@ function sourceToText(source: KnowledgeSource): string {
     source.suitableFor?.length ? `適合職務：${source.suitableFor.join("、")}` : "",
     source.requiredDocuments?.length ? `準備文件：${source.requiredDocuments.join("、")}` : "",
     source.tags?.length ? `標籤：${source.tags.join("、")}` : "",
+    typeof source.metadata?.warning === "string" ? `連結提醒：${source.metadata.warning}` : "",
+    typeof source.metadata?.status === "string" ? `狀態：${source.metadata.status}` : "",
+    typeof source.metadata?.deadline === "string" ? `期限：${source.metadata.deadline}` : "",
+    Array.isArray(source.metadata?.amounts) ? `金額重點：${source.metadata.amounts.join("、")}` : "",
+    Array.isArray(source.metadata?.relatedUrls) ? `相關連結：${source.metadata.relatedUrls.join("、")}` : "",
     source.sourceUrl ? `來源：${source.sourceUrl}` : "",
   ]
     .filter(Boolean)
@@ -413,21 +570,25 @@ function buildSearchQuery(opts: {
     ? [
         opts.persona.text,
         opts.persona.careerStage,
-        opts.persona.mainInterests.join(" "),
-        opts.persona.skillGaps.join(" "),
-        opts.persona.mainConcerns.join(" "),
-      ].join(" ")
+        opts.persona.mainInterests?.join(" "),
+        opts.persona.skillGaps?.join(" "),
+        opts.persona.mainConcerns?.join(" "),
+      ]
+        .filter(Boolean)
+        .join(" ")
     : "";
   const profileText = opts.profile
     ? [
         opts.profile.department,
         opts.profile.grade,
         opts.profile.currentStage,
-        opts.profile.goals.join(" "),
-        opts.profile.interests.join(" "),
+        opts.profile.goals?.join(" "),
+        opts.profile.interests?.join(" "),
         opts.profile.concerns,
         opts.profile.startupInterest ? "創業" : "",
-      ].join(" ")
+      ]
+        .filter(Boolean)
+        .join(" ")
     : "";
   return `${opts.question}\n${personaText}\n${profileText}`.trim();
 }
@@ -512,11 +673,13 @@ function tokenOverlap(queryTokens: string[], docTokens: string[]): number {
 
 function detectIntent(question: string): QueryIntent {
   const q = question.toLowerCase();
-  if (/創業|青創|貸款|咖啡廳|商業模式|startup/.test(q)) return "startup";
-  if (/課程|講座|工作坊|學|sql|資料分析|excel|python/.test(q)) return "course";
-  if (/補助|津貼|補貼|申請|資格/.test(q)) return "subsidy";
+  if (/研究|調查|統計|比例|青年需求|政策建議|優先提供|痛點|趨勢/.test(q)) return "research";
+  if (/住宅|社宅|租屋|居住|安心樂租/.test(q)) return "housing";
   if (/實習|工讀/.test(q)) return "internship";
-  if (/文組|焦慮|不好找|沒有經驗/.test(q)) return "faq";
+  if (/課程|講座|工作坊|學|sql|資料分析|excel|python/.test(q)) return "course";
+  if (/創業|青創|貸款|咖啡廳|商業模式|startup/.test(q)) return "startup";
+  if (/補助|津貼|補貼|申請|資格/.test(q)) return "subsidy";
+  if (/文組|焦慮|壓力|迷惘|沒用|快畢業|畢業|應屆|方向不明|不好找|沒有經驗/.test(q)) return "faq";
   if (/職涯|履歷|面試|諮詢|求職|轉職/.test(q)) return "career";
   return "general";
 }
@@ -526,18 +689,31 @@ function metadataBoost(intent: QueryIntent, source: KnowledgeSource, question: s
   const q = question.toLowerCase();
 
   if (intent === "startup" && ["startup", "space"].includes(source.category)) boost += 0.12;
+  if (intent === "startup" && source.category === "course" && /課程|講座|工作坊/.test(q)) boost += 0.08;
   if (intent === "course" && source.category === "course") boost += 0.12;
   if (intent === "subsidy" && ["subsidy", "internship", "startup"].includes(source.category)) boost += 0.1;
   if (intent === "career" && source.category === "career_consulting") boost += 0.1;
-  if (intent === "internship" && source.category === "internship") boost += 0.12;
+  if (intent === "internship" && source.category === "internship") boost += 0.16;
+  if (intent === "internship" && source.category === "subsidy") boost += 0.04;
+  if (intent === "internship" && ["course", "startup", "space"].includes(source.category)) boost -= 0.05;
   if (intent === "faq" && source.sourceType === "faq") boost += 0.12;
+  if (intent === "faq" && source.sourceType === "research") boost += 0.08;
+  if (intent === "faq" && source.category === "career_consulting") boost += 0.08;
+  if (intent === "housing" && source.category === "housing") boost += 0.14;
+  if (intent === "research" && source.sourceType === "research") boost += 0.16;
+  if (["startup", "course", "career", "housing"].includes(intent) && source.sourceType === "research") {
+    boost += 0.035;
+  }
+  if (/研究|調查|統計|比例|需求|政策建議|痛點/.test(q) && source.sourceType === "research") {
+    boost += 0.08;
+  }
   if (source.approvedByCounselor) boost += 0.025;
 
   for (const tag of source.tags ?? []) {
-    if (q.includes(tag.toLowerCase())) boost += 0.035;
+    if (q.includes(tag.toLowerCase())) boost += tag.length >= 6 ? 0.07 : 0.035;
   }
 
-  return Math.min(0.22, boost);
+  return Math.min(0.28, boost);
 }
 
 function calculateConfidence(chunks: RetrievedKnowledgeChunk[]): number {
@@ -574,15 +750,23 @@ async function generateWithGemini(opts: {
   const primaryModel = process.env.GEMINI_MODEL || "gemini-2.5-flash";
   const fallbackModel =
     process.env.GEMINI_FALLBACK_MODEL || "gemini-2.5-flash-lite";
-  const modelsToTry = primaryModel === fallbackModel
-    ? [primaryModel]
-    : [primaryModel, fallbackModel];
+  // 第三層 fallback：用 google 官方的 latest alias，幫我們在 model 退場時自動換到下一代。
+  // （原本指 gemini-2.0-flash，但 2.0 系列已對新用戶停用、會 404。）
+  const fallbackModel2 =
+    process.env.GEMINI_FALLBACK_MODEL_2 || "gemini-flash-latest";
+  const modelsToTry = Array.from(
+    new Set([primaryModel, fallbackModel, fallbackModel2]),
+  );
 
   const systemInstruction =
     "你是 EmploYA! 的青年職涯與創業助理「小幫手」，正在跟一位青年朋友聊天。" +
     "用繁體中文、口語、溫暖、像朋友的口氣回覆，3 到 6 句話即可，避免條列、標題與「**問題理解：**」之類的格式化區塊。" +
-    "把檢索到最相關的 1 到 2 個資源自然地融入句子裡（例如「你可以看看《xxx》這個資源」），" +
-    "不需要重複條列其他資源、不需要重複貼網址（系統會在訊息下方自動把卡片貼上來）。" +
+    "若你提到 retrievedChunks 裡的某個資源，請用 markdown 連結格式 [資源名稱](sourceUrl) 內嵌它的網址，" +
+    "URL 一定要從該資源在 retrievedChunks 裡的 sourceUrl 欄位原封不動帶過來；" +
+    "**絕對不能使用任何未出現在 retrievedChunks.sourceUrl 的網址（例如不要硬塞 https://youth.gov.taipei）**；" +
+    "如果該資源沒有 sourceUrl，就只寫資源名稱不要加連結。同一個資源在一句話裡只連一次。" +
+    "如果資源內容或 metadata.warning 指出它只是入口頁、分類頁或查詢入口，必須明確說這是入口，不是單一課程或單一活動頁；不可把課程活動系統入口說成已確認的 SQL 課程頁。" +
+    "如果 retrievedChunks 的 sourceType 是 research，請把它當作研究洞察或需求背景使用，不要說成申請資格、政策承諾或個人診斷。" +
     "若資料不足或不確定使用者個人資格，誠實說，並引導使用者補充哪一段資訊或預約諮詢師。" +
     "禁止編造政策名稱、補助金額、申請資格或網址。";
 
@@ -604,9 +788,11 @@ async function generateWithGemini(opts: {
     retrievedChunks: opts.retrievedChunks.map((chunk) => ({
       title: chunk.title,
       category: CATEGORY_LABELS[chunk.category],
+      sourceType: chunk.sourceType,
       sourceUrl: chunk.sourceUrl,
       score: chunk.score,
       content: chunk.chunkText,
+      metadata: chunk.metadata,
     })),
   };
 
@@ -664,13 +850,57 @@ async function generateWithGemini(opts: {
         ?.map((part) => part.text ?? "")
         .join("")
         .trim();
-      if (text) return text;
+      if (text) {
+        // 把 markdown link 裡那些不在 retrievedChunks 的網址直接抹掉純文字保留 —
+        //   寬容 Gemini 偶爾會多塞網址（例如 trailing slash 不一致、連到首頁），
+        //   不要因為這個小細節整個丟掉好回答。
+        const sanitized = stripUngroundedLinks(text, opts.retrievedChunks);
+        if (isLikelyCompleteAnswer(sanitized)) return sanitized;
+        console.warn(`[rag.gemini] [${model}] rejected incomplete output`);
+      }
     } catch (err) {
       console.error(`[rag.gemini] [${model}] threw:`, err);
       continue;
     }
   }
   return null;
+}
+
+function isLikelyCompleteAnswer(answer: string): boolean {
+  const trimmed = answer.trim();
+  if (!trimmed) return false;
+  return /[。！？!?）)]$/.test(trimmed);
+}
+
+/**
+ * 把 [文字](url) 裡 url 不在 retrievedChunks.sourceUrl 的那些連結降級成純文字。
+ * 保留答案本體，避免因為一個多餘 / 失準的連結就整段被丟掉。
+ * URL 比對先做寬鬆 normalize（去掉 trailing /、忽略 query/fragment）。
+ */
+function stripUngroundedLinks(
+  answer: string,
+  chunks: RetrievedKnowledgeChunk[],
+): string {
+  const allowed = new Set(
+    chunks
+      .map((c) => normalizeUrl(c.sourceUrl ?? ""))
+      .filter((u) => u.length > 0),
+  );
+  return answer.replace(
+    /\[([^\]]+)\]\(([^)]+)\)/g,
+    (match, label: string, url: string) => {
+      const ok = allowed.has(normalizeUrl(url.trim()));
+      return ok ? match : label;
+    },
+  );
+}
+
+function normalizeUrl(url: string): string {
+  return url
+    .trim()
+    .toLowerCase()
+    .replace(/[#?].*$/, "")
+    .replace(/\/+$/, "");
 }
 
 function buildLocalAnswer(opts: {
@@ -723,6 +953,8 @@ function pickSourceDetail(source: KnowledgeSource): string {
     trimText(source.content, 115),
     source.eligibility ? `資格：${trimText(source.eligibility, 70)}` : "",
     source.applicationMethod ? `方式：${trimText(source.applicationMethod, 70)}` : "",
+    typeof source.metadata?.warning === "string" ? `提醒：${trimText(source.metadata.warning, 80)}` : "",
+    typeof source.metadata?.status === "string" ? `狀態：${source.metadata.status}` : "",
   ].filter(Boolean);
   return parts.join(" ");
 }
@@ -742,6 +974,9 @@ function buildNextStep(intent: QueryIntent, chunks: RetrievedKnowledgeChunk[]): 
     return "先把創業想法整理成目標客群、服務內容、成本與目前階段，再預約創業諮詢；若已進入籌備或營運初期，再評估青創貸款、共享空間或創業課程。";
   }
   if (intent === "course") {
+    if (/創業|咖啡廳|商業模式|市場驗證|籌資/.test(titles)) {
+      return "先看創業入門課程的商業模式、市場驗證、財務與法規主題，再預約創業諮詢，把目標客群、成本結構與資源需求整理成初版創業 To-do List。";
+    }
     return "先選一門入門課建立作品或履歷素材；若你的目標是資料分析，建議從 SQL、Excel 資料整理與小型作品集開始。";
   }
   if (intent === "subsidy") {
@@ -752,6 +987,12 @@ function buildNextStep(intent: QueryIntent, chunks: RetrievedKnowledgeChunk[]): 
   }
   if (intent === "career" || intent === "faq") {
     return "先盤點 2 到 3 個具體經驗，改寫成履歷語言；若仍卡住，可預約職涯諮詢或履歷健檢。";
+  }
+  if (intent === "housing") {
+    return "先確認你需要社宅、租屋資訊或居住支持，再到住宅資源入口查看資格、登記方式與最新公告。";
+  }
+  if (intent === "research") {
+    return "先把研究洞察當作需求背景，再搭配實際政策、課程或諮詢資源；若要做簡報，可補上數據來源與適用對象。";
   }
   return `先閱讀 ${titles}，再補充你的年齡、身分、目前階段與想申請的資源類型。`;
 }
@@ -764,6 +1005,8 @@ function intentLabel(intent: QueryIntent): string {
     career: "職涯諮詢",
     internship: "實習資源",
     faq: "歷史案例",
+    housing: "居住資源",
+    research: "研究洞察",
     general: "青年資源",
   };
   return labels[intent];
