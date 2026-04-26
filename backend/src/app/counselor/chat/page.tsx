@@ -94,6 +94,8 @@ export default function CounselorChatPage() {
   const [topicsError, setTopicsError] = useState<string | null>(null);
 
   const [selectedTopicId, setSelectedTopicId] = useState<string | null>(null);
+  // 諮詢師目前選定要回哪一題的 chat_messages.id（user 訊息）。null = 預設回最後一題。
+  const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
   const [topicDetail, setTopicDetail] = useState<TopicWithMembers | null>(null);
   const [topicDetailLoading, setTopicDetailLoading] = useState(false);
   const [topicDetailError, setTopicDetailError] = useState<string | null>(null);
@@ -242,6 +244,7 @@ export default function CounselorChatPage() {
     setDraft("");
     setSendError(null);
     setResolveError(null);
+    setReplyToMessageId(null);
     try {
       const r = await apiFetch<{ topic: TopicWithMembers }>(
         `/api/counselor/topics/${encodeURIComponent(topicId)}`,
@@ -276,6 +279,7 @@ export default function CounselorChatPage() {
     setDraft("");
     setSendError(null);
     setResolveError(null);
+    setReplyToMessageId(null);
     void loadFor(selectedId, "full");
   }, [selectedId, loadFor]);
 
@@ -366,9 +370,17 @@ export default function CounselorChatPage() {
     try {
       await apiFetch<{ conversationId: string; topicId: string }>(
         `/api/counselor/topics/${encodeURIComponent(tid)}/reply`,
-        { method: "POST", body: JSON.stringify({ text }) },
+        {
+          method: "POST",
+          body: JSON.stringify({
+            text,
+            // 諮詢師有點選 Q 卡 → 鎖定那一題；沒點 → 後端默認回最後一題。
+            replyToMessageId: replyToMessageId ?? undefined,
+          }),
+        },
       );
       setDraft("");
+      setReplyToMessageId(null);
       // 順手 silent refresh — 把 topic detail / topics list 拉新。
       const sid = selectedIdRef.current;
       if (sid) void loadFor(sid, "silent");
@@ -660,7 +672,11 @@ export default function CounselorChatPage() {
                 {!topicDetailLoading &&
                   !topicDetailError &&
                   topicDetail && (
-                    <TopicDetailView topic={topicDetail} />
+                    <TopicDetailView
+                      topic={topicDetail}
+                      selectedReplyToMessageId={replyToMessageId}
+                      onPickReplyTo={setReplyToMessageId}
+                    />
                   )}
               </>
             )}
@@ -680,6 +696,76 @@ export default function CounselorChatPage() {
                   {resolveError}
                 </div>
               )}
+              {topicDetail &&
+                (() => {
+                  const idx = topicDetail.members.findIndex(
+                    (m) => m.messageId === replyToMessageId,
+                  );
+                  const picked = idx >= 0 ? topicDetail.members[idx] : null;
+                  const fallback =
+                    topicDetail.members[topicDetail.members.length - 1] ?? null;
+                  const target = picked ?? fallback;
+                  if (!target) return null;
+                  const targetIdx = picked ? idx + 1 : topicDetail.members.length;
+                  return (
+                    <div
+                      style={{
+                        marginTop: 8,
+                        padding: "8px 12px",
+                        background: picked
+                          ? "#EEF2FF"
+                          : colors.surfaceMuted,
+                        border: `1px solid ${
+                          picked ? "#C7D2FE" : colors.border
+                        }`,
+                        borderLeft: picked
+                          ? "3px solid #4338CA"
+                          : `3px solid ${colors.border}`,
+                        borderRadius: radii.md,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                      }}
+                    >
+                      <div
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          fontSize: 12,
+                          color: colors.textSecondary,
+                          lineHeight: 1.5,
+                          display: "-webkit-box",
+                          WebkitBoxOrient: "vertical",
+                          WebkitLineClamp: 2,
+                          overflow: "hidden",
+                        }}
+                      >
+                        ↩ 回覆 <strong>Q{targetIdx}</strong>{" "}
+                        {picked ? "（已選）" : "（預設：最後一題）"}：
+                        {target.rawQuestion || target.normalizedText}
+                      </div>
+                      {picked && (
+                        <button
+                          onClick={() => setReplyToMessageId(null)}
+                          title="取消選擇 → 回退到預設（最後一題）"
+                          style={{
+                            padding: "4px 10px",
+                            borderRadius: 999,
+                            border: `1px solid ${colors.borderStrong}`,
+                            background: "transparent",
+                            color: colors.textSecondary,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            cursor: "pointer",
+                            flex: "0 0 auto",
+                          }}
+                        >
+                          取消選擇
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
               <ReplyComposer
                 draft={draft}
                 setDraft={setDraft}
@@ -1397,7 +1483,15 @@ function TopicCard({
 // ---------------------------------------------------------------------------
 // Topic 詳情：列出該主題下所有 user Q + AI 暫時回覆
 // ---------------------------------------------------------------------------
-function TopicDetailView({ topic }: { topic: TopicWithMembers }) {
+function TopicDetailView({
+  topic,
+  selectedReplyToMessageId,
+  onPickReplyTo,
+}: {
+  topic: TopicWithMembers;
+  selectedReplyToMessageId: string | null;
+  onPickReplyTo: (messageId: string | null) => void;
+}) {
   // 把所有成員問題 + 諮詢師回覆按時間排成一條 thread。
   type Item =
     | { kind: "q"; createdAt: string; member: TopicMember; index: number }
@@ -1466,6 +1560,22 @@ function TopicDetailView({ topic }: { topic: TopicWithMembers }) {
             key={it.member.normalizedQuestionId}
             member={it.member}
             index={it.index}
+            isSelected={
+              selectedReplyToMessageId !== null &&
+              selectedReplyToMessageId === it.member.messageId
+            }
+            onPick={
+              it.member.messageId
+                ? () => {
+                    // 已經選中 → 取消；否則切到這題。
+                    if (selectedReplyToMessageId === it.member.messageId) {
+                      onPickReplyTo(null);
+                    } else {
+                      onPickReplyTo(it.member.messageId);
+                    }
+                  }
+                : undefined
+            }
           />
         ) : (
           <CounselorReplyCard key={it.reply.messageId} reply={it.reply} />
@@ -1478,26 +1588,44 @@ function TopicDetailView({ topic }: { topic: TopicWithMembers }) {
 function TopicMemberCard({
   member,
   index,
+  isSelected,
+  onPick,
 }: {
   member: TopicMember;
   index: number;
+  isSelected: boolean;
+  onPick?: () => void;
 }) {
   const ts = (() => {
     const d = new Date(member.createdAt);
     return isNaN(d.getTime()) ? "" : d.toLocaleString();
   })();
+  // member.messageId 缺失（極少數 normalize row 沒掛 chat_messages.id）就不能 anchor 它。
+  const clickable = !!onPick;
   return (
     <div
       style={{
         padding: 12,
-        background: "rgba(255,255,255,0.92)",
-        border: `1px solid ${colors.border}`,
+        background: isSelected ? "#EEF2FF" : "rgba(255,255,255,0.92)",
+        border: `1px solid ${isSelected ? "#4338CA" : colors.border}`,
         borderRadius: radii.lg,
         boxShadow: shadows.soft,
         display: "flex",
         flexDirection: "column",
         gap: 8,
+        cursor: clickable ? "pointer" : "default",
+        transition: "background 120ms, border-color 120ms",
+        outline: isSelected ? "2px solid rgba(67,56,202,0.18)" : "none",
       }}
+      onClick={onPick}
+      role={clickable ? "button" : undefined}
+      title={
+        clickable
+          ? isSelected
+            ? "已選作回覆對象 — 再點一次取消"
+            : `點選回覆 Q${index}`
+          : undefined
+      }
     >
       <div
         style={{
@@ -1512,13 +1640,29 @@ function TopicMemberCard({
           style={{
             padding: "1px 7px",
             borderRadius: 999,
-            background: colors.surfaceMuted,
+            background: isSelected
+              ? "linear-gradient(135deg,#6366F1,#4338CA)"
+              : colors.surfaceMuted,
             fontWeight: 800,
-            color: colors.textSecondary,
+            color: isSelected ? "#fff" : colors.textSecondary,
           }}
         >
           Q{index}
         </span>
+        {isSelected && (
+          <span
+            style={{
+              padding: "1px 7px",
+              borderRadius: 999,
+              background: "#4338CA",
+              color: "#fff",
+              fontWeight: 800,
+              letterSpacing: 0.4,
+            }}
+          >
+            ↩ 將回覆此題
+          </span>
+        )}
         {ts && <span>{ts}</span>}
         {member.urgency && member.urgency !== "中" && (
           <span

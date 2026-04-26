@@ -6,12 +6,21 @@ import { store } from "@/lib/store";
 import * as db from "@/lib/db";
 import type { ChatConversation, ChatMessage } from "@/types/chat";
 
-type Body = { text?: string };
+type Body = {
+  text?: string;
+  /**
+   * 諮詢師選擇要回覆哪一題。值是該題對應的 chat_messages.id（user 訊息）。
+   *   - 帶這個 → 鎖定那一題當引用對象。
+   *   - 沒帶 → 預設用主題裡最後一個 user 訊息（向後相容）。
+   * 必須是該 topic 的成員，否則 400。
+   */
+  replyToMessageId?: string;
+};
 
 /**
  * POST /api/counselor/topics/{topicId}/reply
  *
- * 諮詢師對「整個主題」一次回覆。
+ * 諮詢師對「整個主題」一次回覆，可選擇指定要回哪一題。
  * 寫進 user 最近活躍的 conversation（拿不到的話建一條新的），
  * sender='assistant' + by_counselor=true。user 端透過 realtime 立刻收到。
  *
@@ -27,9 +36,21 @@ export const POST = withAuth<{ topicId: string }>(
     if (!topic) return apiError("not_found", "Topic not found.");
     const targetUserId = topic.userId;
 
-    // 找這個 topic 最後一個 user 提問當作「這則回覆對應到哪題」 — user 端 bubble 上方
-    // 會掛 ↩ 引用框讓使用者看得懂回覆對應的問題（不管中間被多少別題擠下去）。
-    const anchor = topic.members[topic.members.length - 1] ?? null;
+    // 諮詢師指定回哪一題；沒指定就退回「最後一題」當預設 anchor。
+    // 指定的 id 必須是這個 topic 的成員，否則 400 — 防止 client 帶錯資料。
+    let anchor = topic.members[topic.members.length - 1] ?? null;
+    if (body?.replyToMessageId) {
+      const picked = topic.members.find(
+        (m) => m.messageId === body.replyToMessageId,
+      );
+      if (!picked) {
+        return apiError(
+          "bad_request",
+          "`replyToMessageId` is not a member of this topic.",
+        );
+      }
+      anchor = picked;
+    }
 
     // 用 topic 成員裡最後一筆訊息所在的 conversation；fallback 到 user 最近 conversation。
     let convId = anchor?.conversationId ?? null;
