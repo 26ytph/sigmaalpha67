@@ -11,6 +11,8 @@ type CounselorUser = {
   userId: string;
   name: string;
   email: string;
+  /** 這位個案目前還沒被諮詢師回覆的題數（跨所有 pending 主題）。 */
+  unansweredCount?: number;
 };
 
 type RemoteMessage = {
@@ -30,6 +32,8 @@ type StoredTopic = {
   summary: string;
   status: "pending" | "resolved";
   questionCount: number;
+  /** 該主題下還沒被諮詢師回覆的題數。Card 上會顯示「N 未回」徽章。 */
+  unansweredCount?: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -553,6 +557,12 @@ export default function CounselorChatPage() {
                       {u.email || u.userId}
                     </div>
                   </div>
+                  {(u.unansweredCount ?? 0) > 0 && (
+                    <UnansweredBadge
+                      count={u.unansweredCount ?? 0}
+                      activeRow={active}
+                    />
+                  )}
                 </button>
               );
             })}
@@ -1145,6 +1155,50 @@ function Avatar({ name, active }: { name: string; active: boolean }) {
   );
 }
 
+/**
+ * 「未回」徽章 — 顯示一個紅色小圓泡，數字代表還沒回的題數。
+ *   - activeRow=true（目前選中的個案 / 高亮主題卡）會用白底紅字以維持對比。
+ *   - count >= 100 顯示為「99+」。
+ */
+function UnansweredBadge({
+  count,
+  activeRow = false,
+  label = "未回",
+}: {
+  count: number;
+  activeRow?: boolean;
+  label?: string;
+}) {
+  if (count <= 0) return null;
+  const display = count >= 100 ? "99+" : String(count);
+  const isLabel = !!label;
+  return (
+    <span
+      title={`${count} 則尚未回覆`}
+      style={{
+        flex: "0 0 auto",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        padding: isLabel ? "2px 8px" : "1px 6px",
+        minWidth: isLabel ? undefined : 22,
+        height: 22,
+        borderRadius: 999,
+        background: activeRow ? "#fff" : "linear-gradient(135deg,#F43F5E,#E11D48)",
+        color: activeRow ? "#E11D48" : "#fff",
+        fontSize: 11,
+        fontWeight: 800,
+        letterSpacing: 0.4,
+        justifyContent: "center",
+        boxShadow: activeRow ? "none" : "0 1px 3px rgba(225,29,72,0.4)",
+      }}
+    >
+      <span>{display}</span>
+      {isLabel && <span>{label}</span>}
+    </span>
+  );
+}
+
 function MessageBubble({
   m,
   dimmed = false,
@@ -1657,6 +1711,11 @@ function TopicCard({
         >
           {topic.questionCount} 題・{updated}
         </span>
+        {!resolved && (topic.unansweredCount ?? 0) > 0 && (
+          <span style={{ marginLeft: "auto", flex: "0 0 auto" }}>
+            <UnansweredBadge count={topic.unansweredCount ?? 0} />
+          </span>
+        )}
       </div>
       <div
         style={{

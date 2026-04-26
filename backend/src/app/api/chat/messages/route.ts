@@ -17,6 +17,7 @@ import {
 } from "@/engines/rag";
 import { generateUserInsight } from "@/engines/userInsight";
 import { processUserQuestion } from "@/engines/normalizeQuestion";
+import { classifyUserIntent } from "@/engines/intentClassifier";
 import {
   buildChatCacheKey,
   checkRate,
@@ -101,6 +102,57 @@ export const POST = withAuth(async (req, { auth }) => {
 
   const profile = body.context?.useProfile === false ? null : store.profiles.get(auth.userId) ?? null;
   const persona = store.personas.get(auth.userId) ?? null;
+
+  // —— AI 分類器（守門員）——
+  //   把訊息丟給便宜的 Gemini lite 判斷是「真的要問職涯／求職／心情」還是
+  //   「打招呼／問你是誰／off-topic／無意義／鬧」。後者直接由 AI 自己回一句，
+  //   不打 KB、不開 case、不丟主題卡給諮詢師、直接 mark resolved。
+  //   AI 沒 key / 失敗時會默認回 actionable，繼續走後面的嚴格 RAG 守門。
+  const intent = await classifyUserIntent({
+    message: body.message,
+    profile,
+    persona,
+  });
+  if (intent.kind === "smalltalk") {
+    const reply = intent.reply;
+    const replyMsg: ChatMessage = {
+      id: randomUUID(),
+      role: "assistant",
+      text: reply,
+      createdAt: new Date().toISOString(),
+    };
+    conv.messages.push(replyMsg);
+    conv.updatedAt = replyMsg.createdAt;
+    store.conversations.set(convId, conv);
+    await db.insertChatMessage(auth.userId, convId, replyMsg, {
+      askedHandoff: false,
+    });
+    // aiHighConfidence:true → normalize pipeline 寫 resolved=true，
+    // 不會跑進 clusterQuestionIntoTopic，諮詢師端看不到這題。
+    refreshNormalizedQuestionInBackground({
+      userId: auth.userId,
+      conversationId: convId,
+      messageId: userMsg.id,
+      question: body.message,
+      assistantReply: reply,
+      aiHighConfidence: true,
+      profile,
+      persona,
+      history: conv.messages.slice(0, -2),
+    });
+    return NextResponse.json({
+      conversationId: convId,
+      messageId: replyMsg.id,
+      reply,
+      shouldHandoff: false,
+      tokensUsed: 0,
+      rag: null,
+      chatProvider: "smalltalk",
+      cached: false,
+      debugChatError: null,
+      classifierReason: intent.reason ?? null,
+    });
+  }
 
   // 先把諮詢師寫過的 FAQ 從 supabase 載進 in-memory KB（60s TTL）。
   // 這一步要在 shouldUseRag / searchKnowledge 之前 — 否則 cold start 後寫過的 FAQ 撈不到。

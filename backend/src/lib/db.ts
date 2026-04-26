@@ -99,12 +99,22 @@ export async function fetchProfile(userId: string): Promise<Profile | null> {
 }
 
 /**
- * 給諮詢師端用：列出所有有 profile 的使用者（id + 顯示名稱）。
+ * 給諮詢師端用：列出所有有 profile 的使用者（id + 顯示名稱）+ 每人的「未回題數」。
+ * 未回題數 = 該 user 處在 pending topic 裡、且 messageId 沒有出現在
+ *   chat_messages.normalized.reply_to_message_id 集合的 normalized_questions 條數。
+ *
  * Supabase 沒設定就回空陣列，呼叫端會自動 fallback 到 in-memory。
  */
 export async function listAllUsersForCounselor(
   limit = 200,
-): Promise<Array<{ userId: string; name: string; email: string }>> {
+): Promise<
+  Array<{
+    userId: string;
+    name: string;
+    email: string;
+    unansweredCount: number;
+  }>
+> {
   const supabase = getSupabaseAdmin();
   if (!supabase) return [];
   const { data, error } = await supabase
@@ -116,10 +126,61 @@ export async function listAllUsersForCounselor(
     console.warn("[db] listAllUsersForCounselor failed:", error.message);
     return [];
   }
-  return (data ?? []).map((r: Record<string, unknown>) => ({
+  const users = (data ?? []).map((r: Record<string, unknown>) => ({
     userId: (r.user_id as string) ?? "",
     name: (((r.name as string) ?? "") + "").trim(),
     email: (((r.email as string) ?? "") + "").trim(),
+  }));
+
+  // 一次撈 pending topics + 屬於這些 topic 的 normalized_questions + 諮詢師回過的 reply_to_message_id。
+  const counts = new Map<string, number>();
+  try {
+    const { data: pendingTopics } = await supabase
+      .from("question_topics")
+      .select("id, user_id")
+      .eq("status", "pending");
+    if (!pendingTopics || pendingTopics.length === 0) {
+      return users.map((u) => ({ ...u, unansweredCount: 0 }));
+    }
+    const topicIdToUser = new Map<string, string>();
+    for (const t of pendingTopics) {
+      topicIdToUser.set(t.id as string, t.user_id as string);
+    }
+    const topicIds = Array.from(topicIdToUser.keys());
+    const [{ data: nqRows }, { data: replyRows }] = await Promise.all([
+      supabase
+        .from("normalized_questions")
+        .select("topic_id, message_id")
+        .in("topic_id", topicIds)
+        .not("message_id", "is", null),
+      supabase
+        .from("chat_messages")
+        .select("normalized")
+        .eq("by_counselor", true),
+    ]);
+    const answered = new Set<string>();
+    for (const r of replyRows ?? []) {
+      const n = r.normalized as { reply_to_message_id?: unknown } | null;
+      if (n && typeof n.reply_to_message_id === "string") {
+        answered.add(n.reply_to_message_id);
+      }
+    }
+    for (const r of nqRows ?? []) {
+      const tid = r.topic_id as string | null;
+      const mid = r.message_id as string | null;
+      if (!tid || !mid) continue;
+      if (answered.has(mid)) continue;
+      const uid = topicIdToUser.get(tid);
+      if (!uid) continue;
+      counts.set(uid, (counts.get(uid) ?? 0) + 1);
+    }
+  } catch (e) {
+    console.warn("[db] listAllUsersForCounselor unanswered count failed:", e);
+  }
+
+  return users.map((u) => ({
+    ...u,
+    unansweredCount: counts.get(u.userId) ?? 0,
   }));
 }
 
@@ -682,6 +743,34 @@ function rowToTopic(row: Record<string, unknown>): StoredTopic {
   };
 }
 
+/**
+ * 撈某 user「諮詢師回過的所有 reply_to_message_id」集合 — 用來判斷哪些 user msg 已被回覆。
+ * 諮詢師回覆永遠會把 anchor 的 chat_messages.id 寫進 normalized.reply_to_message_id。
+ */
+async function fetchAnsweredMessageIds(
+  userId: string,
+): Promise<Set<string>> {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) return new Set();
+  const { data, error } = await supabase
+    .from("chat_messages")
+    .select("normalized")
+    .eq("user_id", userId)
+    .eq("by_counselor", true);
+  if (error) {
+    console.warn("[db] fetchAnsweredMessageIds failed:", error.message);
+    return new Set();
+  }
+  const set = new Set<string>();
+  for (const row of data ?? []) {
+    const n = row.normalized as { reply_to_message_id?: unknown } | null;
+    if (n && typeof n.reply_to_message_id === "string") {
+      set.add(n.reply_to_message_id);
+    }
+  }
+  return set;
+}
+
 /** 列出某 user 的 topics（給諮詢師端 UI）。預設只回 pending。 */
 export async function listUserTopics(
   userId: string,
@@ -703,7 +792,32 @@ export async function listUserTopics(
     console.warn("[db] listUserTopics failed:", error.message);
     return [];
   }
-  return (data ?? []).map(rowToTopic);
+  const topics = (data ?? []).map(rowToTopic);
+  if (topics.length === 0) return topics;
+
+  // 補上 unansweredCount：拉這些 topic 的所有 normalized_questions（user msg id），
+  // 比對諮詢師已回過哪些 reply_to_message_id，差集大小即未回題數。
+  const topicIds = topics.map((t) => t.id);
+  const [{ data: nqRows }, answeredIds] = await Promise.all([
+    supabase
+      .from("normalized_questions")
+      .select("topic_id, message_id")
+      .in("topic_id", topicIds)
+      .not("message_id", "is", null),
+    fetchAnsweredMessageIds(userId),
+  ]);
+  const counts = new Map<string, number>();
+  for (const r of nqRows ?? []) {
+    const tid = r.topic_id as string | null;
+    const mid = r.message_id as string | null;
+    if (!tid || !mid) continue;
+    if (answeredIds.has(mid)) continue;
+    counts.set(tid, (counts.get(tid) ?? 0) + 1);
+  }
+  return topics.map((t) => ({
+    ...t,
+    unansweredCount: counts.get(t.id) ?? 0,
+  }));
 }
 
 /** Counselor 端用：拿某張 topic 的完整內容 + 所有成員問題（含 AI 暫時回覆）。 */
@@ -797,7 +911,18 @@ export async function fetchTopicWithMembers(
     }
   }
 
-  return { ...topic, members, counselorReplies };
+  // 算這個 topic 的「未回答」數 — 把 counselorReplies 已知的 anchor id 對到 members。
+  // counselorReplies 來源就是這 topic 的 by_counselor 訊息，已經 filter 過 topic_id 了。
+  const answeredIds = new Set<string>();
+  for (const r of counselorReplies) {
+    if (r.replyToMessageId) answeredIds.add(r.replyToMessageId);
+  }
+  let unansweredCount = 0;
+  for (const m of members) {
+    if (m.messageId && !answeredIds.has(m.messageId)) unansweredCount++;
+  }
+
+  return { ...topic, unansweredCount, members, counselorReplies };
 }
 
 export async function createTopic(input: {

@@ -20,13 +20,14 @@ export const GET = withAuth(async (_req, { auth }) => {
     return NextResponse.json({ users: filtered });
   }
 
-  // 2) Fallback 到 in-memory store
+  // 2) Fallback 到 in-memory store — 沒接 supabase 時不算 unansweredCount，固定 0。
   const local = Array.from(store.profiles.entries())
     .filter(([userId]) => userId !== auth.userId)
     .map(([userId, profile]) => ({
       userId,
       name: profile.name ?? "",
       email: profile.email ?? "",
+      unansweredCount: 0,
     }));
 
   // 也把純粹有對話、但還沒填 profile 的 user 列進來
@@ -35,7 +36,7 @@ export const GET = withAuth(async (_req, { auth }) => {
     if (conv.userId === auth.userId) continue;
     if (seen.has(conv.userId)) continue;
     seen.add(conv.userId);
-    local.push({ userId: conv.userId, name: "", email: "" });
+    local.push({ userId: conv.userId, name: "", email: "", unansweredCount: 0 });
   }
 
   return NextResponse.json({ users: local });

@@ -206,3 +206,6 @@ supabase/README.md
 supabase/schema.sql
 supabase/seed.sql
 backend/package.json
+
+# Demo / 報告用的私人小抄，不入版本
+CHEATSHEET.md

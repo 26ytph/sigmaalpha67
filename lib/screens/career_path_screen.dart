@@ -391,7 +391,20 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
         result.exploreChanged == null &&
         result.translationsChanged == null;
     if (allFailed) {
-      _showDialog(title: '無法連線', body: '剛剛沒拿到任何資料。已沿用本機現況。');
+      // 把第一個失敗訊息一起顯示出來，方便判斷是後端沒開、port 不對、token 過期還是其它。
+      final detail = result.lastError;
+      _showDialog(
+        title: '無法連線後端',
+        body: [
+          '4 個 sync 端點全部失敗，已沿用本機現況。',
+          if (detail != null && detail.isNotEmpty) '\n錯誤訊息：\n$detail',
+          '\n常見原因：',
+          '・後端沒啟動（Next.js dev server）',
+          '・EMPLOYA_API_BASE_URL 設錯',
+          '・Android 模擬器需要用 10.0.2.2 而非 localhost',
+          '・帳號 token 過期，請登出再登入',
+        ].join('\n'),
+      );
       return;
     }
 
