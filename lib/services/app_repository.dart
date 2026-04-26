@@ -230,12 +230,20 @@ class AppRepository {
     bool? personaChanged,
     int? exploreChanged,
     int? translationsChanged,
+    String? lastError,
   })> refreshAll() async {
     final pre = await load();
     bool? profileChanged;
     bool? personaChanged;
     int? exploreChanged;
     int? translationsChanged;
+    // 收第一個失敗訊息給 UI 顯示，方便使用者 debug（後端沒開 / port 不對 / token 過期 ...）
+    String? lastError;
+    void recordError(String label, Object e) {
+      lastError ??= '$label: $e';
+      // ignore: avoid_print
+      print('[refreshAll] $label failed: $e');
+    }
 
     // 1) Profile
     try {
@@ -246,8 +254,9 @@ class AppRepository {
       } else {
         profileChanged = false;
       }
-    } catch (_) {
+    } catch (e) {
       profileChanged = null;
+      recordError('profile', e);
     }
 
     // 2) Persona
@@ -260,8 +269,9 @@ class AppRepository {
       } else {
         personaChanged = false;
       }
-    } catch (_) {
+    } catch (e) {
       personaChanged = null;
+      recordError('persona', e);
     }
 
     // 3) Swipe summary — likedRoleIds is the strongest signal for the
@@ -280,8 +290,9 @@ class AppRepository {
           ),
         ),
       );
-    } catch (_) {
+    } catch (e) {
       exploreChanged = null;
+      recordError('swipe', e);
     }
 
     // 4) Skill translations
@@ -296,8 +307,9 @@ class AppRepository {
       }
       translationsChanged = changed;
       await save(cur.copyWith(skillTranslations: remote));
-    } catch (_) {
+    } catch (e) {
       translationsChanged = null;
+      recordError('skills', e);
     }
 
     final storage = await load();
@@ -307,6 +319,7 @@ class AppRepository {
       personaChanged: personaChanged,
       exploreChanged: exploreChanged,
       translationsChanged: translationsChanged,
+      lastError: lastError,
     );
   }
 
