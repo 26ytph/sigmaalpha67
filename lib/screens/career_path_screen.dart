@@ -552,14 +552,73 @@ class _CareerPathScreenState extends State<CareerPathScreen> {
 
   Future<void> _openAiRefineSheet() async {
     final initial = _plan.goalPrompt;
+    final quickPrompts = _buildQuickPrompts();
     final result = await showCupertinoModalPopup<String>(
       context: context,
-      builder: (ctx) => _AiRefineSheet(initialPrompt: initial),
+      builder: (ctx) => _AiRefineSheet(
+        initialPrompt: initial,
+        quickPrompts: quickPrompts,
+      ),
     );
     if (result == null) return;
     final prompt = result.trim();
     if (prompt.isEmpty) return;
     await _runAiRefine(prompt);
+  }
+
+  /// 用使用者目前的 Persona（mainInterests / strengths / skillGaps）+
+  /// 興趣探索（likedRoleIds → role.title）動態組出 5 個左右的快捷範本，
+  /// 取代過去寫死的 DevOps / UX 範例。完全沒資料時回一組通用 fallback。
+  List<String> _buildQuickPrompts() {
+    final persona = widget.storage.persona;
+    final out = <String>[];
+    final seen = <String>{};
+    void add(String s) {
+      final t = s.trim();
+      if (t.isEmpty || !seen.add(t)) return;
+      out.add(t);
+    }
+
+    // 1) ❤ 過的滑卡 → 「我想專注做 X」
+    final likedRoles = <CareerRole>[];
+    final likedSeen = <String>{};
+    for (final id in widget.storage.explore.likedRoleIds) {
+      if (!likedSeen.add(id)) continue;
+      final role = _lookupRole(id);
+      if (role != null) likedRoles.add(role);
+    }
+    if (likedRoles.length >= 2) {
+      add('幫我把計畫聚焦在 ${likedRoles[0].title} 和 ${likedRoles[1].title}');
+    } else if (likedRoles.isNotEmpty) {
+      add('我想投 ${likedRoles.first.title} 相關的職位');
+    }
+
+    // 2) Persona.mainInterests → 「強化 X 方向」
+    if (persona.mainInterests.isNotEmpty) {
+      add('強化 ${persona.mainInterests.first} 方向的任務');
+    }
+
+    // 3) strengths → 「我已經會 X 了」
+    if (persona.strengths.isNotEmpty) {
+      add('我已經會 ${persona.strengths.first} 了，幫我跳過基礎');
+    }
+
+    // 4) skillGaps → 「幫我加上 X 的訓練」
+    if (persona.skillGaps.isNotEmpty) {
+      add('幫我加上 ${persona.skillGaps.first} 的訓練');
+    }
+
+    // 5) 兩個與內容無關的萬用範本（精簡 / 加重 portfolio）
+    add('計畫太重了，幫我精簡到一週只做 2 件事');
+    add('幫我加強作品集與履歷準備');
+
+    // 完全沒 Persona 也沒滑卡時的通用 fallback。
+    if (out.length <= 2) {
+      add('我想找一份實習，幫我從零安排計畫');
+      add('我比較想做技術，弱化行銷 / 業務內容');
+    }
+
+    return out.take(5).toList(growable: false);
   }
 
   Future<void> _runAiRefine(String prompt) async {
@@ -2060,8 +2119,15 @@ class _AiBadge extends StatelessWidget {
 // =============================================================================
 
 class _AiRefineSheet extends StatefulWidget {
-  const _AiRefineSheet({required this.initialPrompt});
+  const _AiRefineSheet({
+    required this.initialPrompt,
+    required this.quickPrompts,
+  });
   final String initialPrompt;
+
+  /// 由 caller 依使用者 Persona / 已 ❤ 滑卡動態組出來的快速範本。
+  /// 為空時不顯示 chip 區塊。
+  final List<String> quickPrompts;
 
   @override
   State<_AiRefineSheet> createState() => _AiRefineSheetState();
@@ -2070,14 +2136,6 @@ class _AiRefineSheet extends StatefulWidget {
 class _AiRefineSheetState extends State<_AiRefineSheet> {
   late final TextEditingController _controller =
       TextEditingController(text: widget.initialPrompt);
-
-  static const _quickPrompts = [
-    '我想投 DevOps 實習',
-    '我已經會 Docker 了，幫我跳過',
-    '把焦點轉到後端工程，弱化前端',
-    '我想做 UX Research，幫我加上訪談技巧',
-    '計畫太重了，幫我精簡到一週只做 2 件事',
-  ];
 
   @override
   void dispose() {
@@ -2133,7 +2191,7 @@ class _AiRefineSheetState extends State<_AiRefineSheet> {
               ),
               AppGaps.h6,
               const Text(
-                '比如「我想投 DevOps 實習」「我已經會 Docker 了」「把焦點轉到後端」。\n'
+                '說一段你想要的方向、已會 / 待補的能力、或想投的職位。\n'
                 'AI 會依現有計畫調整，已勾選的任務會盡量保留打勾。',
                 style: TextStyle(
                   fontSize: 12,
@@ -2155,36 +2213,50 @@ class _AiRefineSheetState extends State<_AiRefineSheet> {
                   border: Border.all(color: AppColors.separator),
                 ),
               ),
-              AppGaps.h10,
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final p in _quickPrompts)
-                    GestureDetector(
-                      onTap: () => setState(() => _controller.text = p),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 6,
-                        ),
-                        decoration: BoxDecoration(
-                          color: AppColors.surface,
-                          borderRadius: BorderRadius.circular(AppRadii.pill),
-                          border: Border.all(color: AppColors.separator),
-                        ),
-                        child: Text(
-                          p,
-                          style: const TextStyle(
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.textSecondary,
+              if (widget.quickPrompts.isNotEmpty) ...[
+                AppGaps.h10,
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 4),
+                  child: Text(
+                    '依你的 Persona 與 ❤ 滑卡產生的快捷範本（可改）：',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textTertiary,
+                    ),
+                  ),
+                ),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final p in widget.quickPrompts)
+                      GestureDetector(
+                        onTap: () => setState(() => _controller.text = p),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppColors.surface,
+                            borderRadius:
+                                BorderRadius.circular(AppRadii.pill),
+                            border: Border.all(color: AppColors.separator),
+                          ),
+                          child: Text(
+                            p,
+                            style: const TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.textSecondary,
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                ],
-              ),
+                  ],
+                ),
+              ],
               AppGaps.h16,
               Row(
                 children: [

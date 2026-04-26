@@ -109,6 +109,9 @@ export default function CounselorChatPage() {
   const [sendError, setSendError] = useState<string | null>(null);
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState<string | null>(null);
+  // 解決主題 modal 狀態：開啟 + 「是否寫進 RAG」checkbox（預設 true）。
+  const [resolveModalOpen, setResolveModalOpen] = useState(false);
+  const [resolveSaveToRag, setResolveSaveToRag] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const selectedIdRef = useRef<string | null>(null);
   selectedIdRef.current = selectedId;
@@ -395,24 +398,28 @@ export default function CounselorChatPage() {
     }
   }
 
-  async function resolveCurrentTopic() {
+  function openResolveModal() {
+    if (!selectedTopicId || resolving) return;
+    setResolveError(null);
+    setResolveSaveToRag(true); // 每次重開預設打勾
+    setResolveModalOpen(true);
+  }
+
+  async function confirmResolve() {
     const tid = selectedTopicId;
     if (!tid || resolving) return;
-    if (
-      !window.confirm(
-        "確認要把這個主題標記為已解決嗎？AI 會把整理過的 Q&A 推進 RAG，下次相同提問將直接由 AI 回覆。",
-      )
-    ) {
-      return;
-    }
     setResolving(true);
     setResolveError(null);
     try {
-      await apiFetch<{ topic: StoredTopic }>(
+      await apiFetch<{ topic: StoredTopic; savedToRag?: boolean }>(
         `/api/counselor/topics/${encodeURIComponent(tid)}/resolve`,
-        { method: "POST" },
+        {
+          method: "POST",
+          body: JSON.stringify({ saveToRag: resolveSaveToRag }),
+        },
       );
       // 解決後就回 topics list，並 silent refresh
+      setResolveModalOpen(false);
       setSelectedTopicId(null);
       setTopicDetail(null);
       const sid = selectedIdRef.current;
@@ -776,7 +783,7 @@ export default function CounselorChatPage() {
               />
               <div style={{ marginTop: 8, display: "flex", justifyContent: "flex-end" }}>
                 <button
-                  onClick={resolveCurrentTopic}
+                  onClick={openResolveModal}
                   disabled={resolving || !topicDetail}
                   style={{
                     padding: "8px 16px",
@@ -817,7 +824,209 @@ export default function CounselorChatPage() {
           {selectedId && insight && <InsightCard insight={insight} />}
         </Pane>
       </div>
+
+      {resolveModalOpen && (
+        <ResolveTopicModal
+          saveToRag={resolveSaveToRag}
+          onSaveToRagChange={setResolveSaveToRag}
+          resolving={resolving}
+          error={resolveError}
+          onCancel={() => {
+            if (resolving) return;
+            setResolveModalOpen(false);
+          }}
+          onConfirm={confirmResolve}
+        />
+      )}
     </main>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 標記主題已解決 modal — 取代原本的 window.confirm，多了「是否寫進 RAG」開關。
+// ---------------------------------------------------------------------------
+function ResolveTopicModal({
+  saveToRag,
+  onSaveToRagChange,
+  resolving,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  saveToRag: boolean;
+  onSaveToRagChange: (v: boolean) => void;
+  resolving: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      onClick={onCancel}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15,23,42,0.45)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1000,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(440px, 92vw)",
+          background: "#fff",
+          borderRadius: radii.lg,
+          padding: 20,
+          boxShadow: "0 24px 48px rgba(15,23,42,0.18)",
+          border: `1px solid ${colors.border}`,
+          fontFamily: fontStack,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 16,
+            fontWeight: 800,
+            color: colors.textPrimary,
+            marginBottom: 8,
+          }}
+        >
+          標記為已解決？
+        </div>
+        <div
+          style={{
+            fontSize: 13,
+            lineHeight: 1.6,
+            color: colors.textSecondary,
+            marginBottom: 14,
+          }}
+        >
+          這個主題下所有問題會一起標成已解決，並通知使用者。
+          <br />
+          下方可選擇是否同時把這次的 Q&A 整理進 RAG 知識庫。
+        </div>
+
+        <label
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 10,
+            padding: "12px 14px",
+            background: saveToRag ? "#ECFDF5" : colors.surfaceMuted,
+            border: `1.5px solid ${
+              saveToRag ? "#10B981" : colors.border
+            }`,
+            borderRadius: radii.md,
+            cursor: resolving ? "default" : "pointer",
+            transition: "all .15s",
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={saveToRag}
+            disabled={resolving}
+            onChange={(e) => onSaveToRagChange(e.target.checked)}
+            style={{
+              marginTop: 2,
+              width: 16,
+              height: 16,
+              cursor: resolving ? "default" : "pointer",
+            }}
+          />
+          <div style={{ flex: 1 }}>
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 700,
+                color: colors.textPrimary,
+                marginBottom: 2,
+              }}
+            >
+              同時存進 RAG 知識庫
+            </div>
+            <div
+              style={{
+                fontSize: 11.5,
+                lineHeight: 1.5,
+                color: colors.textTertiary,
+              }}
+            >
+              下次相同提問 AI 可以直接引用本次回覆。
+              <br />
+              若是敏感／個人化太強的個案，建議取消勾選。
+            </div>
+          </div>
+        </label>
+
+        {error && (
+          <div
+            style={{
+              marginTop: 12,
+              fontSize: 12,
+              color: colors.iosRed,
+              fontWeight: 600,
+            }}
+          >
+            {error}
+          </div>
+        )}
+
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "flex-end",
+            gap: 8,
+            marginTop: 18,
+          }}
+        >
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={resolving}
+            style={{
+              padding: "9px 16px",
+              borderRadius: radii.md,
+              border: `1px solid ${colors.border}`,
+              background: "#fff",
+              color: colors.textSecondary,
+              fontSize: 13,
+              fontWeight: 700,
+              cursor: resolving ? "default" : "pointer",
+            }}
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={resolving}
+            style={{
+              padding: "9px 18px",
+              borderRadius: radii.md,
+              border: "none",
+              background: resolving
+                ? colors.borderStrong
+                : "linear-gradient(135deg,#10B981,#059669)",
+              color: "#fff",
+              fontSize: 13,
+              fontWeight: 800,
+              cursor: resolving ? "default" : "pointer",
+              minWidth: 120,
+            }}
+          >
+            {resolving
+              ? "處理中…"
+              : saveToRag
+                ? "解決並存進 RAG"
+                : "只標記解決"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

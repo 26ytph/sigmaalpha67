@@ -1,26 +1,31 @@
-# EmploYA!
+# EmploYA !
 
-> 把迷惘變成下一步。
+> ❤️🔥青年職涯導遊 - 從探索到行動🔥❤️
 
-**賽題分類**：賽題 B · 行善台北
-**團隊**：sigmaalpha67
-**作品定位**：AI 青年職涯與創業個案服務平台
+**賽題 B**：行善台北<br>
+**團隊**：尖銳吉吉今晚吃吉<br>
+**作品定位**：AI 青年職涯與創業個案服務平台<br>
 **目標使用者**：台北青年、第一線諮詢師、青年政策單位
 
 ![EmploYA! demo overview](docs/readme/demo-overview.svg)
 
+<img src="images%20(1).gif" alt="EmploYA demo gif" width="360" />
+
 ## 30 秒看懂這個專案
 
-EmploYA! 做了一套 AI 青年職涯與創業服務流程，給「不知道自己適合什麼、也不知道下一步該找誰」的青年使用。系統會透過基本建檔、滑動探索、技能翻譯與 AI 問答，形成可閱讀的 Persona 與個人化 To-do List；當問題需要真人協助時，後端會產生諮詢師接手資訊，政策端也能看到去識別化的青年需求趨勢。
+EmploYA ! 不只是一個資訊平台或聊天機器人，而是一款同時服務**青年**、**諮詢師**與**政府機構**三端的 AI 個案服務系統。<br>
+我們做了**技能翻譯**、**滑動式興趣探索**、依照使用者興趣擬合個人化 **To-Do List** 等功能，給迷茫的求職青年及創業者，解決「不知道下一步該做什麼」的問題，一步一步帶領青年從探索到行動。<br>
 
 主要功能：
 
-- **Persona 生成**：把 Profile、興趣、經驗與困惑整理成可讀的個人輪廓。
-- **滑動探索**：用右滑/左滑蒐集職涯偏好，動態更新 Persona。
-- **技能翻譯**：把社團、課堂、打工與活動經驗轉成職場能力與履歷句。
-- **AI Chat + RAG**：回答政策、補助、課程、創業資源與 FAQ，並標示檢索來源。
-- **諮詢師接手**：把模糊問題正規化，整理成諮詢師可快速理解的個案資訊。
-- **政策儀表板**：彙整熱門問題、職涯趨勢、技能缺口、創業需求與政策建議。
+- **技能翻譯**：將文組青年經歷轉譯為職場可用的軟實力。
+- **職涯探索**：
+  - **滑動探索**：右滑/左滑蒐集職涯偏好，讓青年能輕鬆接收資訊，並動態更新 Persona。
+  - **個人化職涯路徑**：依興趣及個人目標生成 To-Do List，並可客製化調整，引領青年在職涯中一步步前進。
+  - **AI Chat + RAG**：串Gemini API 結合 RAG，同時提供使用者情緒支持及需要資源連結。
+- **諮商師與公部門**：
+  - **諮詢師接手**：把模糊問題正規化，整理成諮詢師可快速理解的重點；並將不同種類的問題分配給對應專業的諮詢師。
+  - **政策儀表板**：彙整熱門問題、職涯趨勢、創業需求與政策建議等，讓政府機關快速了解目前青少年問題、生成詳細報告與 AI 自動化建議。
 
 ## Demo 入口
 
@@ -86,18 +91,6 @@ flutter run -d chrome `
 ```txt
 http://127.0.0.1:8081
 ```
-
-## 現場 3-5 分鐘 Demo 劇本
-
-建議不要從登入開始講，直接展示最有感的結果。
-
-1. **直接秀 Persona**：小安是社會系大三，想找實習但不知道文組能力怎麼轉換。
-2. **滑動探索**：右滑 UX Research、行銷企劃、資料分析助理，左滑不感興趣職務。
-3. **Persona 更新**：展示系統把偏好轉成興趣方向、優勢與技能缺口。
-4. **技能翻譯**：輸入「辦過迎新、做過課堂訪談報告」，產生活動企劃、訪談、資料整理與履歷句。
-5. **To-do List**：展示 UX Research / 資料分析入門路徑與任務。
-6. **AI Chat + RAG**：問「我文組是不是不好找工作？」或「想學資料分析有沒有課程補助？」展示 AI 根據知識庫回答。
-7. **諮詢師與政策端**：切到後台/儀表板，說明如何把個案與趨勢提供給第一線人員與政策單位。
 
 ## 系統架構
 
@@ -218,25 +211,19 @@ Gemini 根據檢索內容回答
 backend/src/data/knowledgeBase.ts
 ```
 
+
 ## 資料來源
 
-- YTP 2026 黑客松賽題 B：行善台北補充資料
-- 臺北市青年局政府公開網站資訊
-- 專案內整理的 mock policy / course / startup / FAQ knowledge base
-- 使用者互動資料：Profile、Swipe、Skill Translation、Chat、To-do 狀態
+[](https://github.com/ntuimytp/sigmaalpha67/tree/restore-chat-gemini-fallback#%E8%B3%87%E6%96%99%E4%BE%86%E6%BA%90)
 
-## 評分亮點對照
-
-
-| 評分面向     | 對應亮點                                                      |
-| ------------ | ------------------------------------------------------------- |
-| 技術 25%     | Flutter + Next.js API + Gemini + RAG + Supabase write-through |
-| 創新 25%     | Persona 文字化、滑動探索、技能翻譯、問題正規化、諮詢師接手包  |
-| 體驗 20%     | 青年用低門檻互動完成探索，不需要一開始就知道自己要問什麼      |
-| 主題契合 20% | 對應行善台北：青年服務、第一線人員輔助、政策端趨勢洞察        |
-| 落地 10%     | 支援 demo store，也預留 Supabase 持久化與後台管理擴充         |
+* YTP 2026 黑客松賽題 B：行善台北補充資料
+* 臺北市青年局政府公開網站資訊
+* 專案內整理的 mock policy / course / startup / FAQ knowledge base
+* 使用者互動資料：Profile、Swipe、Skill Translation、Chat、To-do 狀態
 
 ## Smoke Test
+
+[](https://github.com/ntuimytp/sigmaalpha67/tree/restore-chat-gemini-fallback#smoke-test)
 
 後端啟動後可用 PowerShell 測試：
 
@@ -279,21 +266,72 @@ Invoke-RestMethod `
   -Body $body
 ```
 
-## 目前限制與後續擴充
+## 目前限制
 
-- 目前 MVP 以 in-memory store 為主，Supabase 為 optional write-through。
-- RAG 現階段使用 seed knowledge base 與簡易語意檢索，後續可升級為 Supabase pgvector。
-- Dashboard 部分資料使用 mock fallback。
-- 諮詢師端可再補更完整的 case workflow、分流與權限管理。
+[](https://github.com/ntuimytp/sigmaalpha67/tree/restore-chat-gemini-fallback#%E7%9B%AE%E5%89%8D%E9%99%90%E5%88%B6)
 
-## 建議 GitHub Topics
+* 目前 MVP 以 in-memory store 為主，Supabase 為 optional write-through。
+* RAG 現階段使用 seed knowledge base 與簡易語意檢索，後續可升級為 Supabase pgvector。
+* Dashboard 部分資料使用 mock fallback。
 
-```txt
-ytp2026, taipei, public-service, youth, career, startup,
-ai, rag, gemini, flutter, nextjs, supabase
-MPLOYA_API_TOKEN=demo-user
+## 資料來源
+
+[](https://github.com/ntuimytp/sigmaalpha67/tree/restore-chat-gemini-fallback#%E8%B3%87%E6%96%99%E4%BE%86%E6%BA%90)
+
+* YTP 2026 黑客松賽題 B：行善台北補充資料
+* 臺北市青年局政府公開網站資訊
+* 專案內整理的 mock policy / course / startup / FAQ knowledge base
+* 使用者互動資料：Profile、Swipe、Skill Translation、Chat、To-do 狀態
+
+## Smoke Test
+
+[](https://github.com/ntuimytp/sigmaalpha67/tree/restore-chat-gemini-fallback#smoke-test)
+
+後端啟動後可用 PowerShell 測試：
+
+```powershell
+Invoke-RestMethod http://localhost:3001/api/health
 ```
 
+測試 RAG：
+
+```powershell
+$body = @{
+  question = "我想學資料分析，有沒有適合初學者的課程或補助？"
+  topK = 3
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://localhost:3001/api/rag/query `
+  -Headers @{ Authorization = "Bearer demo-user" } `
+  -ContentType "application/json" `
+  -Body $body
 ```
 
+測試 Chat：
+
+```powershell
+$body = @{
+  message = "我文組是不是不好找工作？"
+  context = @{
+    mode = "career"
+    useRag = $true
+  }
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://localhost:3001/api/chat/messages `
+  -Headers @{ Authorization = "Bearer demo-user" } `
+  -ContentType "application/json" `
+  -Body $body
 ```
+
+## 目前限制
+
+[](https://github.com/ntuimytp/sigmaalpha67/tree/restore-chat-gemini-fallback#%E7%9B%AE%E5%89%8D%E9%99%90%E5%88%B6)
+
+* 目前 MVP 以 in-memory store 為主，Supabase 為 optional write-through。
+* RAG 現階段使用 seed knowledge base 與簡易語意檢索，後續可升級為 Supabase pgvector。
+* Dashboard 部分資料使用 mock fallback。

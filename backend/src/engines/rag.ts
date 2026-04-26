@@ -65,6 +65,16 @@ const RAG_TRIGGER_TERMS = [
   "政策建議",
   "痛點",
   "趨勢",
+  "焦慮",
+  "壓力",
+  "迷惘",
+  "沒用",
+  "快畢業",
+  "畢業",
+  "應屆",
+  "方向不明",
+  "不知道自己",
+  "卡住",
 ];
 
 const KNOWN_TERMS = [
@@ -116,6 +126,15 @@ const KNOWN_TERMS = [
   "專業證照課程",
   "媒合就業機會",
   "心理健康",
+  "畢業焦慮",
+  "畢業轉銜",
+  "應屆生",
+  "第一份工作",
+  "方向釐清",
+  "能力盤點",
+  "信心受挫",
+  "心理支持",
+  "職涯發展諮詢",
   "tys",
   "star",
 ];
@@ -124,6 +143,32 @@ const EXPANSIONS: Array<{ match: string[]; add: string[] }> = [
   {
     match: ["文組"],
     add: ["技能翻譯", "履歷", "職涯焦慮", "企劃", "溝通", "資料整理", "職涯諮詢"],
+  },
+  {
+    match: ["焦慮", "壓力", "迷惘", "沒用", "卡住"],
+    add: [
+      "畢業焦慮",
+      "職涯探索",
+      "心理支持",
+      "職涯諮詢",
+      "能力盤點",
+      "方向釐清",
+      "青年生涯問題調查",
+      "諮詢師接手包",
+    ],
+  },
+  {
+    match: ["畢業", "快畢業", "應屆"],
+    add: [
+      "應屆畢業生",
+      "畢業轉銜",
+      "第一份工作",
+      "職涯發展諮詢",
+      "職涯探索",
+      "履歷健檢",
+      "專業技能訓練",
+      "媒合就業機會",
+    ],
   },
   {
     match: ["資料分析", "數據分析", "data"],
@@ -634,7 +679,7 @@ function detectIntent(question: string): QueryIntent {
   if (/課程|講座|工作坊|學|sql|資料分析|excel|python/.test(q)) return "course";
   if (/創業|青創|貸款|咖啡廳|商業模式|startup/.test(q)) return "startup";
   if (/補助|津貼|補貼|申請|資格/.test(q)) return "subsidy";
-  if (/文組|焦慮|不好找|沒有經驗/.test(q)) return "faq";
+  if (/文組|焦慮|壓力|迷惘|沒用|快畢業|畢業|應屆|方向不明|不好找|沒有經驗/.test(q)) return "faq";
   if (/職涯|履歷|面試|諮詢|求職|轉職/.test(q)) return "career";
   return "general";
 }
@@ -652,6 +697,8 @@ function metadataBoost(intent: QueryIntent, source: KnowledgeSource, question: s
   if (intent === "internship" && source.category === "subsidy") boost += 0.04;
   if (intent === "internship" && ["course", "startup", "space"].includes(source.category)) boost -= 0.05;
   if (intent === "faq" && source.sourceType === "faq") boost += 0.12;
+  if (intent === "faq" && source.sourceType === "research") boost += 0.08;
+  if (intent === "faq" && source.category === "career_consulting") boost += 0.08;
   if (intent === "housing" && source.category === "housing") boost += 0.14;
   if (intent === "research" && source.sourceType === "research") boost += 0.16;
   if (["startup", "course", "career", "housing"].includes(intent) && source.sourceType === "research") {
@@ -808,7 +855,8 @@ async function generateWithGemini(opts: {
         //   寬容 Gemini 偶爾會多塞網址（例如 trailing slash 不一致、連到首頁），
         //   不要因為這個小細節整個丟掉好回答。
         const sanitized = stripUngroundedLinks(text, opts.retrievedChunks);
-        return sanitized;
+        if (isLikelyCompleteAnswer(sanitized)) return sanitized;
+        console.warn(`[rag.gemini] [${model}] rejected incomplete output`);
       }
     } catch (err) {
       console.error(`[rag.gemini] [${model}] threw:`, err);
@@ -816,6 +864,12 @@ async function generateWithGemini(opts: {
     }
   }
   return null;
+}
+
+function isLikelyCompleteAnswer(answer: string): boolean {
+  const trimmed = answer.trim();
+  if (!trimmed) return false;
+  return /[。！？!?）)]$/.test(trimmed);
 }
 
 /**

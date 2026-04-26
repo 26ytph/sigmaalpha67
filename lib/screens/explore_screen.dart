@@ -77,6 +77,17 @@ class _ExploreScreenState extends State<ExploreScreen> {
       ),
     );
 
+    // 按 ❤ 時，把卡片 tag 的中文 label（'設計' / '工程' / ...）合併進
+    // profile.interests。只新增不刪除，避免使用者手動編輯過的清單被吃掉。
+    // 用「目前 widget.storage」算 diff —— 後面才不需要 await persist 結果。
+    final additions = isLike
+        ? role.tags
+            .map((t) => t.label)
+            .where((s) => s.isNotEmpty)
+            .toSet()
+            .difference(widget.storage.profile.interests.toSet())
+        : const <String>{};
+
     _persist((prev) {
       final liked = [...prev.explore.likedRoleIds];
       final disliked = [...prev.explore.dislikedRoleIds];
@@ -89,7 +100,21 @@ class _ExploreScreenState extends State<ExploreScreen> {
         if (!disliked.contains(role.id)) disliked.add(role.id);
       }
 
+      // 對 prev.profile 套同一份 additions（用 set diff 再合併，雙重保險：
+      // 就算 prev 跟 widget.storage 間有微小漂移，也不會塞重複）。
+      var nextProfile = prev.profile;
+      if (additions.isNotEmpty) {
+        final existing = prev.profile.interests.toSet();
+        final realAdds = additions.difference(existing);
+        if (realAdds.isNotEmpty) {
+          nextProfile = prev.profile.copyWith(
+            interests: [...prev.profile.interests, ...realAdds],
+          );
+        }
+      }
+
       return prev.copyWith(
+        profile: nextProfile,
         explore: prev.explore.copyWith(
           likedRoleIds: liked,
           dislikedRoleIds: disliked,
@@ -97,6 +122,18 @@ class _ExploreScreenState extends State<ExploreScreen> {
         ),
       );
     });
+
+    // 真有新增 → 把整份 profile 推到後端（PUT /api/users/me/profile）。
+    // 不 await，UX 不被網路卡住；syncProfile 已經吞掉錯誤。
+    if (additions.isNotEmpty) {
+      final mergedInterests = [
+        ...widget.storage.profile.interests,
+        ...additions,
+      ];
+      final mergedProfile =
+          widget.storage.profile.copyWith(interests: mergedInterests);
+      unawaited(AppRepository.syncProfile(mergedProfile));
+    }
 
     setState(() {
       _deckIdx++;
