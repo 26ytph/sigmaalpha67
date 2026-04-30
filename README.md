@@ -1,3 +1,10 @@
+> 🥈 **2026 YTP 黑客松 — 青年組 第 2 名 銀牌**
+>
+> 作品：**EmploYA ! 青年職涯導遊**
+> 主辦方公開展示版 ｜ 完整得獎名單見 [26ytph organization](https://github.com/orgs/26ytph/repositories)
+
+---
+
 # EmploYA !
 
 ![Build](https://img.shields.io/badge/build-demo%20ready-2ea44f)
